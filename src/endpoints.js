@@ -121,7 +121,7 @@ export const ENDPOINTS = {
     // 输入校验（profile 解析）在此同步做，出错立即返回；真正的导出进任务中心异步跑。
     const profile = await resolveExportProfile(runtime, host, payload?.profile ?? null);
 
-    const id = tasks.create({ kind: 'export', title: `导出 ${profile.name}`, home: runtime?.home });
+    const id = tasks.createTask({ kind: 'export', title: `导出 ${profile.name}`, home: runtime?.home });
     const overrides = {
       out: payload?.out,
       name: payload?.name,
@@ -197,7 +197,7 @@ export const ENDPOINTS = {
     const host = getHost();
     const source = need(payload?.source, '缺少 .dspack 路径或 URL');
 
-    const id = tasks.create({ kind: 'install', title: '安装整合包', home: runtime?.home });
+    const id = tasks.createTask({ kind: 'install', title: '安装整合包', home: runtime?.home });
     tasks.enqueue(async () => {
       try {
         const r = await installPack(host, {
