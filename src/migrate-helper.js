@@ -70,6 +70,20 @@ while ($true) {
   $root = $par
   $cur = $par
 }
+# 进度窗口是 electron GUI，会派生子进程（renderer/GPU/utility）；只排除它的主 pid 不够，
+# 那些子进程会被当桌面后代一起杀掉、窗口随之消失。这里算出 $progress 整棵子树一并跳过。
+$skip = New-Object 'System.Collections.Generic.HashSet[int]'
+[void]$skip.Add($progress)
+$pq = New-Object 'System.Collections.Generic.List[int]'
+$pq.Add($progress)
+while ($pq.Count -gt 0) {
+  $n = $pq[0]; $pq.RemoveAt(0)
+  foreach ($p in $all) {
+    if ($parent[$p.ProcessId] -eq $n -and -not $skip.Contains($p.ProcessId)) {
+      [void]$skip.Add($p.ProcessId); $pq.Add($p.ProcessId)
+    }
+  }
+}
 $desc = New-Object 'System.Collections.Generic.List[int]'
 $q = New-Object 'System.Collections.Generic.List[int]'
 $q.Add($root)
@@ -80,7 +94,7 @@ while ($q.Count -gt 0) {
   }
 }
 foreach ($p in $desc) {
-  if ($p -eq $self -or $p -eq $PID -or $p -eq $progress) { continue }
+  if ($p -eq $self -or $p -eq $PID -or $skip.Contains($p)) { continue }
   Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
 }
 Stop-Process -Id $root -Force -ErrorAction SilentlyContinue
