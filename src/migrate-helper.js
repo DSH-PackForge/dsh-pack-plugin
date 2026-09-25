@@ -5,6 +5,7 @@
 //       switchProfile 完成建 junction + 落 state → 重启桌面 → 退出。
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import http from 'node:http';
 import { spawn, execFile } from 'node:child_process';
 import { switchProfile } from './junction.js';
 import { setStep, setPhase } from './progress.js';
@@ -171,19 +172,29 @@ async function relaunch() {
   return false;
 }
 
-// relaunch 的 pnpm→tsx→electron 链要 ~15s 才真正拉起 electron；若只按 relaunch 的 3s 宽限就
-// 标「完成」，进度窗口关了桌面却还没起来，用户得干等十几秒。这里轮询等新 electron 主进程出现。
-async function checkDesktopUp() {
-  const script = `$m = Get-CimInstance Win32_Process -Filter "Name='electron.exe'" | Where-Object { $_.CommandLine -notmatch '--type=' -and $_.CommandLine -notmatch '--expose-internals' }; if ($m) { 'UP' } else { 'DOWN' }`;
-  const r = await run('powershell', ['-NoProfile', '-Command', script]);
-  return r.stdout === 'UP';
+// relaunch 的 pnpm→tsx→electron 链要 ~15s 才真正把桌面拉起来；若只按 relaunch 的 3s 宽限就
+// 标「完成」，进度窗口关了桌面却还没起来，用户得干等十几秒。这里轮询等客户端真正可用。
+//
+// 判据：探测 web-app 的 HTTP 端口（127.0.0.1:19387，harness desktop-host 写死 --port 19387）。
+// 只判断「electron 主进程存在」是不够的——主进程 1~3s 就 spawn 出来，但此刻窗口还是白屏、
+// web-app 还没监听端口，标 done 仍偏早。端口能连上才说明 host 已就绪、窗口开始渲染。
+const CLIENT_PORT = 19387;
+async function checkClientUp() {
+  return new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port: CLIENT_PORT, path: '/', timeout: 1500 }, (res) => {
+      res.resume();
+      resolve(true);
+    });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+  });
 }
 
 async function waitForDesktopReady() {
   if (process.platform !== 'win32') return;
   const deadline = Date.now() + 25000;
   while (Date.now() < deadline) {
-    if (await checkDesktopUp()) return;
+    if (await checkClientUp()) return;
     await sleep(500);
   }
 }
