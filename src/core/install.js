@@ -305,10 +305,10 @@ async function pnpmInstall(host, target, opts, frozen) {
   const args = ['install'];
   if (frozen) args.push('--frozen-lockfile');
   if (opts.registry) args.push('--registry', opts.registry);
-  let r = await host.exec('pnpm', args, { cwd: target, timeoutMs });
+  let r = await host.exec('pnpm', args, { cwd: target, timeoutMs, onOutput: opts.onOutput });
   // frozen-lockfile 失配时回退普通安装（v4/v5 导入语义）
   if (frozen && r.status !== 0) {
-    r = await host.exec('pnpm', ['install', ...(opts.registry ? ['--registry', opts.registry] : [])], { cwd: target, timeoutMs });
+    r = await host.exec('pnpm', ['install', ...(opts.registry ? ['--registry', opts.registry] : [])], { cwd: target, timeoutMs, onOutput: opts.onOutput });
   }
   if (r.error) throw new Error(`pnpm install 执行失败：${r.error}`);
   if (r.status !== 0) throw new Error(`pnpm install 失败（退出码 ${r.status ?? '未知'}）`);

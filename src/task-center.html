@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>任务中心</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: #1e1f24; color: #e6e6ea;
+    font: 13px/1.5 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    overflow-y: auto;
+  }
+  .titlebar {
+    position: sticky; top: 0; z-index: 2;
+    display: flex; align-items: center; justify-content: space-between;
+    height: 38px; padding: 0 12px;
+    background: #26272e; border-bottom: 1px solid #33343c;
+    -webkit-app-region: drag; user-select: none;
+  }
+  .title { font-size: 13px; font-weight: 600; color: #e6e6ea; }
+  .close {
+    -webkit-app-region: no-drag;
+    width: 24px; height: 24px; border: none; border-radius: 6px;
+    background: transparent; color: #9a9ba3; font-size: 15px; cursor: pointer; line-height: 1;
+  }
+  .close:hover { background: #3a3b43; color: #fff; }
+  .empty { padding: 40px 16px; text-align: center; color: #6b6d76; }
+  .list { display: flex; flex-direction: column; gap: 10px; padding: 12px; }
+  .task {
+    border: 1px solid #33343c; border-radius: 10px;
+    background: #26272e; padding: 12px 14px;
+  }
+  .head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .name { font-size: 14px; font-weight: 600; color: #e6e6ea; word-break: break-all; }
+  .badge { flex: 0 0 auto; font-size: 12px; font-weight: 600; }
+  .timeline { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; }
+  .step { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #9a9ba3; }
+  .dot {
+    width: 15px; height: 15px; border-radius: 50%; flex: 0 0 auto;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; line-height: 1;
+    border: 1.5px solid #4a4b53; color: transparent; background: transparent;
+  }
+  .step.running .dot { border-color: #6ab7ff; color: #6ab7ff; }
+  .step.running .dot::after { content: ''; width: 5px; height: 5px; border-radius: 50%; background: #6ab7ff; }
+  .step.done .dot { border-color: #2ea44f; background: #2ea44f; color: #fff; }
+  .step.failed .dot { border-color: #d3383a; background: #d3383a; color: #fff; }
+  .step.running { color: #cfe6ff; }
+  .step.done { color: #9a9ba3; }
+  .log { margin-top: 10px; }
+  .log summary { cursor: pointer; font-size: 12px; color: #8b8c95; user-select: none; }
+  .logbody {
+    margin: 8px 0 0; padding: 8px 10px; border-radius: 8px;
+    background: #16171b; color: #c7c9d1; font: 12px/1.5 ui-monospace, Consolas, "Courier New", monospace;
+    max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+  }
+  .err { margin-top: 8px; color: #ff8082; font-size: 12px; word-break: break-all; }
+  .task.done { border-color: #2c5a3a; }
+  .task.failed { border-color: #5a2c2e; }
+  .task.queued { opacity: 0.8; }
+</style>
+</head>
+<body>
+  <div class="titlebar">
+    <span class="title">任务中心</span>
+    <button class="close" id="close" title="关闭">✕</button>
+  </div>
+  <div id="list"></div>
+<script>
+  const fs = require('node:fs');
+  const q = new URLSearchParams(location.search);
+  const file = q.get('file');
+  const listEl = document.getElementById('list');
+  document.getElementById('close').onclick = () => window.close();
+
+  const STATUS = {
+    queued: ['排队中', '#e8a23a'],
+    running: ['进行中', '#6ab7ff'],
+    done: ['完成', '#2ea44f'],
+    failed: ['失败', '#d3383a'],
+  };
+
+  let lastRaw = null;
+
+  function el(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text;
+    return n;
+  }
+
+  function render(data) {
+    const tasks = Array.isArray(data.tasks) ? data.tasks : [];
+    listEl.textContent = '';
+    if (tasks.length === 0) {
+      listEl.appendChild(el('div', 'empty', '暂无任务'));
+      return;
+    }
+    for (const t of tasks) listEl.appendChild(renderTask(t));
+  }
+
+  function renderTask(t) {
+    const card = el('div', 'task ' + (t.status || 'queued'));
+    const [stLabel, stColor] = STATUS[t.status] || ['?', '#6b6d76'];
+
+    const head = el('div', 'head');
+    head.appendChild(el('span', 'name', t.title || '任务'));
+    const badge = el('span', 'badge', stLabel);
+    badge.style.color = stColor;
+    head.appendChild(badge);
+    card.appendChild(head);
+
+    const tl = el('div', 'timeline');
+    for (const s of t.stages || []) {
+      const step = el('div', 'step ' + (s.status || 'pending'));
+      const dot = el('span', 'dot', s.status === 'done' ? '✓' : s.status === 'failed' ? '✗' : '');
+      step.appendChild(dot);
+      step.appendChild(el('span', null, s.label));
+      tl.appendChild(step);
+    }
+    card.appendChild(tl);
+
+    const log = t.log || [];
+    if (log.length || t.error) {
+      const det = el('details', 'log');
+      det.open = t.status === 'running' || t.status === 'queued';
+      const label = t.logTruncated
+        ? '输出（已截断，仅保留最后 ' + log.length + ' 行）'
+        : '输出（' + log.length + ' 行）';
+      det.appendChild(el('summary', null, label));
+      const pre = el('pre', 'logbody', log.join('\n'));
+      det.appendChild(pre);
+      if (t.error) det.appendChild(el('div', 'err', '错误：' + t.error));
+      card.appendChild(det);
+      // 运行中的任务：日志自动跟到末尾（每次重渲染后 scrollHeight 重算）。
+      if (det.open) pre.scrollTop = pre.scrollHeight;
+    } else if (t.error) {
+      card.appendChild(el('div', 'err', '错误：' + t.error));
+    }
+    return card;
+  }
+
+  function tick() {
+    let raw = null;
+    try { raw = fs.readFileSync(file, 'utf8'); } catch { /* 尚未写入 */ }
+    if (raw === lastRaw) return;
+    lastRaw = raw;
+    let data = null;
+    try { data = raw ? JSON.parse(raw) : null; } catch { return; /* 半截写，等下一帧 */ }
+    // host 进程已死 → 任务已随 host 消失，本窗口也没有存在的意义，自动关闭。
+    if (data && data.hostPid && !isAlive(data.hostPid)) return window.close();
+    if (data) render(data);
+  }
+
+  function isAlive(pid) {
+    try { process.kill(pid, 0); return true; } catch { return false; }
+  }
+
+  setInterval(tick, 200);
+  tick();
+</script>
+</body>
+</html>

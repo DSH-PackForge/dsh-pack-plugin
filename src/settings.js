@@ -25,6 +25,7 @@ const dict = {
     'action.import': '导入新包',
     'action.market': '浏览市场',
     'action.refresh': '刷新',
+    'action.tasks': '任务中心',
     'installed.title': '已安装的整合包',
     'action.delete': '删除',
     'hint.restart': '点切换后重启生效',
@@ -63,6 +64,7 @@ const dict = {
     'result.loaded': '已读取工作区配置',
     'result.noCfg': '该 profile 暂无已保存的工作区配置',
     'result.pending': '处理中…',
+    'result.taskStarted': '已加入任务中心，进度见小窗',
     'result.noRpc': '后端 RPC 不可用（connection 服务缺失）',
     'err.name': '请填写 profile 名',
     'err.source': '请填写 .dspack 路径或 URL',
@@ -98,6 +100,7 @@ const dict = {
     'action.import': 'Import pack',
     'action.market': 'Browse market',
     'action.refresh': 'Refresh',
+    'action.tasks': 'Task Center',
     'installed.title': 'Installed modpacks',
     'action.delete': 'Delete',
     'hint.restart': 'Takes effect after restart',
@@ -119,6 +122,7 @@ const dict = {
     'action.switch': 'Switch',
     'action.create': 'Create',
     'result.pending': 'Working…',
+    'result.taskStarted': 'Added to task center — see the popup',
     'result.noRpc': 'Backend RPC unavailable (no connection service)',
     'err.name': 'Please fill a profile name',
     'err.source': 'Please fill a .dspack path or URL',
@@ -217,6 +221,19 @@ export function DspackSection({ t, packforge }) {
     } else setResult(r);
   };
 
+  // 轮询任务到结束：完成后刷新 profile 列表；失败就地把错误弹到面板。
+  const watch = (id) => {
+    const timer = setInterval(async () => {
+      const r = await call('task/get', { id });
+      if (!r.ok) { clearInterval(timer); return; }
+      const t = r.value;
+      if (!t || (t.status !== 'done' && t.status !== 'failed')) return;
+      clearInterval(timer);
+      if (t.status === 'failed') showErr(t.error || '任务失败');
+      void refresh();
+    }, 600);
+  };
+
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { void refresh(); }, []);
 
@@ -262,8 +279,13 @@ export function DspackSection({ t, packforge }) {
     setResult({ pending: true });
     const r = await call('pack/export', name ? { profile: name } : {});
     if (!r.ok) return showErr(r.error);
-    const v = r.value;
-    showOk(v.mode === 'repo' ? `已导出仓库 ${v.dir}（${v.name}@${v.version}）` : `已导出 ${v.output}（${v.size} 字节）`);
+    showOk(t('result.taskStarted'));
+    watch(r.value.taskId);
+  };
+
+  const doOpenTasks = async () => {
+    const r = await call('task/window-open', {});
+    if (!r.ok) showErr(r.error);
   };
 
   const doOpenDir = async (name) => {
@@ -309,8 +331,8 @@ export function DspackSection({ t, packforge }) {
     if (!r.ok) return setFieldError(r.error);
     setSource('');
     closeDialog();
-    showOk(`已安装 profile「${r.value.profileName}」→ ${r.value.dir}`);
-    void refresh();
+    showOk(t('result.taskStarted'));
+    watch(r.value.taskId);
   };
 
   const loadMarket = async () => {
@@ -330,8 +352,8 @@ export function DspackSection({ t, packforge }) {
       expectedSize: pack?.size || undefined,
     });
     if (!r.ok) return showErr(r.error);
-    showOk(`已安装 profile「${r.value.profileName}」→ ${r.value.dir}`);
-    void refresh();
+    showOk(t('result.taskStarted'));
+    watch(r.value.taskId);
   };
 
   const doExportFromForm = async () => {
@@ -351,8 +373,8 @@ export function DspackSection({ t, packforge }) {
     };
     const r = await call('pack/export', overrides);
     if (!r.ok) return showErr(r.error);
-    const v = r.value;
-    showOk(v.mode === 'repo' ? `已导出仓库 ${v.dir}（${v.name}@${v.version}）` : `已导出 ${v.output}（${v.size} 字节）`);
+    showOk(t('result.taskStarted'));
+    watch(r.value.taskId);
   };
 
   // 把 .dshpkcfg 回填进表单：空串跳过（保留表单默认值）；无 config 则清空回填。
@@ -530,6 +552,7 @@ export function DspackSection({ t, packforge }) {
         h('div', { style: style.row },
           h('button', { type: 'button', style: style.btn, disabled: !rpc || !active, onClick: () => doExportProfile(active?.name) }, t('action.export')),
           h('button', { type: 'button', style: style.btn, disabled: !rpc || !active, onClick: () => doOpenDir(active?.name) }, t('action.openDir')),
+          h('button', { type: 'button', style: style.btn, disabled: !rpc, onClick: doOpenTasks }, t('action.tasks')),
         ),
       ),
       // 区域 2：创建整合包

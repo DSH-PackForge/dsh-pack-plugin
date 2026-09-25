@@ -30,9 +30,15 @@ export const REPO_CONTENT_LABEL = {
  *                    release?:{dspack,sha256,sha256Value},git:{initialized,committed,reason},conflicted:boolean}>}
  */
 export async function exportRepo(host, profile, opts = {}) {
+  const progress = (stage, detail) => {
+    if (typeof opts.onProgress === 'function') opts.onProgress(stage, detail);
+  };
+
   const content = REPO_CONTENT_LEVELS.includes(opts.content) ? opts.content : 'readme';
+  progress('scan', `扫描 Profile「${profile.name}」`);
   const scan = await scanProfile(host, profile.dir);
   const files = selectFiles(scan.files, opts.include);
+  progress('manifest', '生成 manifest v5');
   const manifest = await buildManifest(host, profile, opts, scan);
 
   const parent = opts.out ? host.resolvePath(opts.out) : host.cwd();
@@ -51,8 +57,11 @@ export async function exportRepo(host, profile, opts = {}) {
   // .dspack 内部的 manifest（由 packProfile 生成）不带该字段。
   let release = null;
   if (!(opts.replaceRelease === 'skip' && releaseExists)) {
+    progress('pack', '打包 release .dspack');
     const pack = await packProfile(host, profile, {
       ...opts,
+      onProgress: undefined, // release 打包不重入进度（避免时间线回退），由本函数统一报阶段
+      onOutput: undefined,
       out: releaseDir,
       force: opts.replaceRelease === true,
     });
@@ -78,6 +87,7 @@ export async function exportRepo(host, profile, opts = {}) {
   // 3) 全套源码 + .dspackignore（full）
   let ignored = '';
   if (content === 'full') {
+    progress('collect', '收集源码文件');
     ignored = renderDspackIgnore();
     await writeText('.dspackignore', ignored);
     for (const f of files) {
@@ -93,7 +103,7 @@ export async function exportRepo(host, profile, opts = {}) {
   await writeText('.gitignore', renderGitignore());
 
   // 5) git init + add + commit（容错：无 git / 无变更时降级）
-  const git = await commitRepo(host, repoDir, manifest);
+  const git = await commitRepo(host, repoDir, manifest, opts.onOutput);
 
   return {
     dir: repoDir,
@@ -126,21 +136,21 @@ export function renderGitignore() {
 }
 
 /** git init + add + commit；无 git 或提交无变更时降级（不算失败）。 */
-async function commitRepo(host, repoDir, manifest) {
+async function commitRepo(host, repoDir, manifest, onOutput) {
   // 无空格（Windows shell:true 下带空格的消息会被拆成多个 pathspec）
   const message = `export:${manifest.name}@${manifest.version}`;
   let gitOk = false;
   try {
-    const r = await host.exec('git', ['--version'], { cwd: repoDir });
+    const r = await host.exec('git', ['--version'], { cwd: repoDir, onOutput });
     gitOk = r?.status === 0;
   } catch { gitOk = false; }
   if (!gitOk) return { initialized: false, committed: false, reason: 'git 不可用' };
 
   const dotGit = host.joinPath(repoDir, '.git');
   const existed = (await host.stat(dotGit)) != null;
-  if (!existed) await host.exec('git', ['init'], { cwd: repoDir });
-  await host.exec('git', ['add', '-A'], { cwd: repoDir });
-  const r = await host.exec('git', ['commit', '-m', message], { cwd: repoDir });
+  if (!existed) await host.exec('git', ['init'], { cwd: repoDir, onOutput });
+  await host.exec('git', ['add', '-A'], { cwd: repoDir, onOutput });
+  const r = await host.exec('git', ['commit', '-m', message], { cwd: repoDir, onOutput });
   const committed = r?.status === 0;
   return { initialized: !existed, committed, reason: committed ? '' : '无变更或提交失败' };
 }

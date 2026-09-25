@@ -39,11 +39,13 @@ src/core/（vendored）                   src/locale（可选）
 | `profile/list` | 列出 profiles（desktop junction 指向项不重复列出，真实 desktop 目录标为 `default`） |
 | `profile/create` / `profile/delete` | 新建 / 删除 profile |
 | `profile/switch` | 切换激活 profile（junction 换指 + 可选 home skills 换指） |
-| `pack/export` | 导出 `.dspack` / 源仓库 |
+| `pack/export` | 导出 `.dspack` / 源仓库（非阻塞，立即返回 `taskId`，进度见任务中心） |
 | `pack/config-load` / `pack/config-save` | 读取 / 保存某 profile 的工作区配置 `.dshpkcfg` |
 | `pack/view` | 校验并查看 `.dspack` 内容 |
-| `pack/install` | 安装 `.dspack` |
+| `pack/install` | 安装 `.dspack`（非阻塞，立即返回 `taskId`，进度见任务中心） |
 | `pack/market` | 浏览市场 |
+| `task/list` / `task/get` | 列出 / 查询任务中心任务（状态、阶段时间线、输出日志） |
+| `task/window-open` | 打开（或聚焦）任务中心小窗 |
 
 所有端点返回 `{ok:true, value} | {ok:false, error:{code,message,details}}`。
 

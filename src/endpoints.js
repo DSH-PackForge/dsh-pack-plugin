@@ -21,6 +21,7 @@ import { switchProfile } from './junction.js';
 import { CHANNEL, PROFILE_NAME_RE } from './channel.js';
 import { ACTIVE_NAME } from './runtime.js';
 import { checkManagerInProfile } from './ensure-manager.js';
+import * as tasks from './tasks.js';
 
 const need = (v, msg) => {
   if (v == null || v === '') throw new Error(msg);
@@ -117,9 +118,11 @@ export const ENDPOINTS = {
 
   'pack/export': async ({ runtime, payload }) => {
     const host = getHost();
+    // 输入校验（profile 解析）在此同步做，出错立即返回；真正的导出进任务中心异步跑。
     const profile = await resolveExportProfile(runtime, host, payload?.profile ?? null);
 
-    const r = await exportFromWorkspace(host, profile, {
+    const id = tasks.create({ kind: 'export', title: `导出 ${profile.name}`, home: runtime?.home });
+    const overrides = {
       out: payload?.out,
       name: payload?.name,
       version: payload?.version,
@@ -133,17 +136,25 @@ export const ENDPOINTS = {
       force: payload?.force === true,
       mode: payload?.mode,
       content: payload?.content,
-    });
-    return r.output
-      ? {
-          mode: 'dspack',
-          output: r.output,
-          sha256: r.sha256,
-          size: r.size,
-          name: r.manifest.name,
-          version: r.manifest.version,
-        }
-      : { mode: 'repo', dir: r.dir, name: r.manifest.name, version: r.manifest.version, content: r.content };
+      onProgress: tasks.progressBridge(id),
+      onOutput: tasks.logSink(id),
+    };
+    tasks.enqueue(async () => {
+      try {
+        const r = await exportFromWorkspace(host, profile, overrides);
+        tasks.finish(id, {
+          ok: true,
+          title: `导出 ${r.manifest?.name ?? profile.name}`,
+          result: r.output
+            ? { mode: 'dspack', output: r.output, sha256: r.sha256, size: r.size, name: r.manifest?.name, version: r.manifest?.version }
+            : { mode: 'repo', dir: r.dir, name: r.manifest?.name, version: r.manifest?.version },
+        });
+      } catch (e) {
+        tasks.finish(id, { ok: false, error: String(e?.message ?? e) });
+      }
+    }).catch(() => {});
+    void tasks.ensureWindow(runtime?.home);
+    return { taskId: id };
   },
 
   // 读取某个 profile 的工作区配置（.dshpkcfg）；不存在/非法 → config: null。
@@ -184,29 +195,49 @@ export const ENDPOINTS = {
 
   'pack/install': async ({ runtime, payload }) => {
     const host = getHost();
-    const r = await installPack(host, {
-      source: need(payload?.source, '缺少 .dspack 路径或 URL'),
-      name: payload?.name,
-      profilesRoot: payload?.profilesRoot ?? runtime?.profilesDir,
-      force: payload?.force === true,
-      dryRun: payload?.dryRun === true,
-      noInstall: payload?.noInstall === true,
-      // 市场安装时透传索引里的 sha256/size，交给 installPack 做完整性校验（防篡改/坏档）。
-      expectedSha256: payload?.expectedSha256 || undefined,
-      expectedSize: payload?.expectedSize,
-    });
-    return {
-      profileName: r.profileName,
-      dir: r.dir,
-      dryRun: r.dryRun === true,
-      installed: r.installed === true,
-      filesDownloaded: r.filesDownloaded ?? 0,
-    };
+    const source = need(payload?.source, '缺少 .dspack 路径或 URL');
+
+    const id = tasks.create({ kind: 'install', title: '安装整合包', home: runtime?.home });
+    tasks.enqueue(async () => {
+      try {
+        const r = await installPack(host, {
+          source,
+          name: payload?.name,
+          profilesRoot: payload?.profilesRoot ?? runtime?.profilesDir,
+          force: payload?.force === true,
+          dryRun: payload?.dryRun === true,
+          noInstall: payload?.noInstall === true,
+          // 市场安装时透传索引里的 sha256/size，交给 installPack 做完整性校验（防篡改/坏档）。
+          expectedSha256: payload?.expectedSha256 || undefined,
+          expectedSize: payload?.expectedSize,
+          onProgress: tasks.progressBridge(id),
+          onOutput: tasks.logSink(id),
+        });
+        tasks.finish(id, {
+          ok: true,
+          title: `安装 ${r.profileName}`,
+          result: { profileName: r.profileName, dir: r.dir, dryRun: r.dryRun === true, installed: r.installed === true, filesDownloaded: r.filesDownloaded ?? 0 },
+        });
+      } catch (e) {
+        tasks.finish(id, { ok: false, error: String(e?.message ?? e) });
+      }
+    }).catch(() => {});
+    void tasks.ensureWindow(runtime?.home);
+    return { taskId: id };
   },
 
   'pack/market': async ({ payload }) => {
     const host = getHost();
     const index = await readMarketIndex(host, payload?.indexPath ?? DEFAULT_MARKET_INDEX);
     return { packs: index?.packs ?? [], error: index?.error ?? null };
+  },
+
+  'task/list': async () => ({ tasks: tasks.list() }),
+
+  'task/get': async ({ payload }) => tasks.get(payload?.id),
+
+  'task/window-open': async ({ runtime }) => {
+    await tasks.ensureWindow(runtime?.home);
+    return { opened: true };
   },
 };

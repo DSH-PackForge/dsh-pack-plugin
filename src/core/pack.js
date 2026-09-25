@@ -21,6 +21,11 @@ export function dspackEntryPath(rel) {
  * @returns {Promise<{manifest, output, sha256, size, included, excluded}>}
  */
 export async function packProfile(host, profile, opts = {}) {
+  const progress = (stage, detail) => {
+    if (typeof opts.onProgress === 'function') opts.onProgress(stage, detail);
+  };
+
+  progress('scan', `扫描 Profile「${profile.name}」`);
   const scan = await scanProfile(host, profile.dir);
   if (scan.files.length === 0) {
     throw new Error(`Profile「${profile.name}」没有可打包的文件（全部被过滤或目录为空）`);
@@ -31,6 +36,7 @@ export async function packProfile(host, profile, opts = {}) {
     throw new Error(`没有选中的文件（请至少勾选一个文件/目录）`);
   }
 
+  progress('manifest', '生成 manifest v5');
   const manifest = await buildManifest(host, profile, opts, scan);
 
   // home 级内容（上一级目录）：用户勾选的全局 skill / 预设等，进 home/ 目录（安装落到 $DSH_HOME 根）。
@@ -42,6 +48,7 @@ export async function packProfile(host, profile, opts = {}) {
     ? homeFiles.filter((f) => [...homeSet].some((p) => f.rel === p || f.rel.startsWith(p)))
     : [];
 
+  progress('collect', '读取文件内容');
   const entries = {};
   for (const f of files) {
     const data = await host.readFile(f.abs);
@@ -57,6 +64,7 @@ export async function packProfile(host, profile, opts = {}) {
   entries['manifest.json'] = encodeText(JSON.stringify(manifest, null, 2) + '\n');
   entries['dspack.json'] = encodeText(JSON.stringify(dspackMarker(DSPACK_CONTAINER_VERSION)) + '\n');
 
+  progress('pack', '打包 .dspack');
   const bytes = buildDspack(entries);
   const outDir = opts.out ? host.resolvePath(opts.out) : host.cwd();
   const outPath = host.joinPath(outDir, `${manifest.name}-${manifest.version}.dspack`);
@@ -65,6 +73,7 @@ export async function packProfile(host, profile, opts = {}) {
     throw new Error(`输出文件已存在：${outPath}（使用 --force 覆盖）`);
   }
   await host.mkdir(outDir);
+  progress('write', `写盘 ${outPath}`);
   await host.writeFile(outPath, bytes);
 
   return {
@@ -88,6 +97,11 @@ export async function packProfile(host, profile, opts = {}) {
  * @returns {Promise<{manifest, output, sha256, size, included, excluded, summary}>}
  */
 export async function packHome(host, home, opts = {}) {
+  const progress = (stage, detail) => {
+    if (typeof opts.onProgress === 'function') opts.onProgress(stage, detail);
+  };
+
+  progress('scan', `扫描 DSH_HOME「${home.name}」`);
   const scan = await scanProfile(host, home.dir);
   if (scan.files.length === 0) {
     throw new Error(`DSH_HOME「${home.name}」没有可打包的文件（全部被过滤或目录为空）`);
@@ -126,6 +140,7 @@ export async function packHome(host, home, opts = {}) {
     files: opts.files ?? [],
   });
 
+  progress('collect', '读取文件内容');
   const entries = {};
   for (const f of files) {
     const data = await host.readFile(f.abs);
@@ -135,6 +150,7 @@ export async function packHome(host, home, opts = {}) {
   entries['manifest.json'] = encodeText(JSON.stringify(manifest, null, 2) + '\n');
   entries['dspack.json'] = encodeText(JSON.stringify(dspackMarker(DSPACK_CONTAINER_VERSION)) + '\n');
 
+  progress('pack', '打包 .dspack');
   const bytes = buildDspack(entries);
   const outDir = opts.out ? host.resolvePath(opts.out) : host.cwd();
   const outPath = host.joinPath(outDir, `${manifest.name}-${manifest.version}.dspack`);
@@ -143,6 +159,7 @@ export async function packHome(host, home, opts = {}) {
     throw new Error(`输出文件已存在：${outPath}（使用 --force 覆盖）`);
   }
   await host.mkdir(outDir);
+  progress('write', `写盘 ${outPath}`);
   await host.writeFile(outPath, bytes);
 
   return {

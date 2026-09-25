@@ -122,17 +122,25 @@ export class NodeHost {
   async exec(cmd, args, opts = {}) {
     // 用异步 spawn（而非 spawnSync）：避免在 Electron 主进程同步阻塞导致界面卡死；
     // stdin 置 ignore 防止 pnpm/git 在无人输入时卡在交互提示；可选 timeoutMs 兜底防永久卡住。
+    // 传 opts.onOutput(chunk) 时 stdout/stderr 改 pipe 并逐块回调（任务中心日志），否则 inherit 直通终端。
     return await new Promise((resolve) => {
+      const capture = typeof opts.onOutput === 'function';
       let child;
       try {
         child = spawn(cmd, args, {
           cwd: opts.cwd,
-          stdio: ['ignore', 'inherit', 'inherit'],
+          stdio: ['ignore', capture ? 'pipe' : 'inherit', capture ? 'pipe' : 'inherit'],
           shell: process.platform === 'win32',
           windowsHide: true,
         });
       } catch (err) {
         return resolve({ status: null, error: err.message });
+      }
+
+      if (capture) {
+        const onData = (chunk) => opts.onOutput(String(chunk));
+        child.stdout.on('data', onData);
+        child.stderr.on('data', onData);
       }
 
       let settled = false;
