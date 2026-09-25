@@ -23,7 +23,7 @@ function detectDevRepoRoot(profilesDir) {
 }
 
 /**
- * 派生脱管迁移进程。宿主应立即把返回值（migrating）回给 UI，然后等待桌面被 helper 杀掉重启。
+ * 派生脱管迁移进程。宿主应立即把返回值（restarting）回给 UI，然后等待桌面被 helper 杀掉重启。
  * @returns {Promise<number|undefined>} helper 的 pid
  */
 export function spawnMigrationHelper(runtime, target) {

@@ -13,8 +13,6 @@ import { ensureManagerInProfile } from './ensure-manager.js';
 const JUNCTION_KIND = process.platform === 'win32' ? 'junction' : 'dir';
 const HOME_SKILLS = 'skills';
 const STASH_DIR = '.dsh-pack';
-// Windows 目录被占用时的 rename/symlink 错误码（EBUSY 最常见，EPERM/EACCES 是别名）。
-const LOCK_CODES = ['EBUSY', 'EPERM', 'EACCES'];
 
 async function lstat(p) {
   try {
@@ -55,28 +53,26 @@ export async function switchProfile(runtime, target, { swapSkills = true, allowD
 
   const previous = (await resolveActiveName(runtime)) ?? 'default';
 
-  // 1) 首次切换：desktop 还是真实目录 → 存档为 default，再建指针。
+  // 1) 每次切换都走脱管 helper：杀桌面 → 换指 → 自动重启（体验一致，不只首次迁移）。
+  //    helper 自身（allowDelegate=false）或非 win32 走下面的原地换指。
+  if (allowDelegate && process.platform === 'win32') {
+    spawnMigrationHelper(runtime, target);
+    return { active: target, method: 'junction', requiresRestart: true, previous, restarting: true };
+  }
+
+  // 2) 原地换指（非 win32 / helper 自身）：首次先把 desktop 存档为 default，再建指针。
+  //    helper 已在杀桌面后调用，rename 即便 EBUSY 也会被其轮询重试（LOCK_CODES 见 migrate-helper.js）。
   let st = await lstat(desktop);
   if (st && !st.isSymbolicLink()) {
     const defaultDir = path.join(profilesDir, 'default');
     if (await exists(defaultDir)) {
       throw new Error('profiles/default 已存在，无法把 desktop 存档为 default');
     }
-    try {
-      await fsp.rename(desktop, defaultDir);
-    } catch (err) {
-      // Windows：运行中的桌面持有 desktop 内句柄，rename 必 EBUSY。
-      // 派生脱管迁移进程在「桌面退出→重启」间隙完成，宿主返回 migrating 提示自动重启。
-      if (allowDelegate && process.platform === 'win32' && LOCK_CODES.includes(err?.code)) {
-        spawnMigrationHelper(runtime, target);
-        return { active: target, method: 'junction', requiresRestart: true, previous, migrating: true };
-      }
-      throw err;
-    }
+    await fsp.rename(desktop, defaultDir);
     st = null;
   }
 
-  // 2) 换指：删旧指针 → 建新指针（junction 用绝对目标）。
+  // 3) 删旧指针 → 建新指针（junction 用绝对目标）。
   if (st && st.isSymbolicLink()) {
     await fsp.unlink(desktop); // 红线：unlink，不是 rm -r
   }
