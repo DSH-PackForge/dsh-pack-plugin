@@ -10,6 +10,10 @@ import { PROFILE_NAME_RE, RESERVED_PROFILE_NAMES } from './channel.js';
 
 const NS = 'dspack';
 const MANAGER_PKG = '@dsh-packforge/dsh-pack-plugin';
+// 版本号由 bundle-client.mjs 用 esbuild define 注入（__PACKAGE_VERSION__）；未注入（如单测直连源码）时兜底。
+const VERSION = typeof __PACKAGE_VERSION__ === 'undefined' ? '0.1.0' : __PACKAGE_VERSION__;
+// logo（icons/folder-zip-line.svg 的 path），About 页用 currentColor 上色。
+const LOGO_PATH = 'M444.330667 128l85.333333 85.333333H896a42.666667 42.666667 0 0 1 42.666667 42.666667v597.333333a42.666667 42.666667 0 0 1-42.666667 42.666667H128a42.666667 42.666667 0 0 1-42.666667-42.666667V170.666667a42.666667 42.666667 0 0 1 42.666667-42.666667h316.330667zM768 768h-170.666667v-128h85.333334v-85.333333h-85.333334v-85.333334h85.333334V384h-85.333334V298.666667h-102.997333l-85.333333-85.333334H170.666667v597.333334h682.666666V298.666667h-170.666666v85.333333h85.333333v85.333333h-85.333333v85.333334h85.333333v213.333333z';
 
 const dict = {
   zh: {
@@ -83,9 +87,15 @@ const dict = {
     'confirm.from': '当前',
     'confirm.to': '目标',
     'confirm.firstTime': '首次切换：会把当前目录存档为 default',
-    'confirm.warning': '检测到目标 profile 没有 {pkg}，将自动安装。若没有此插件，将无法从应用内再次切换 profile。',
+    'confirm.warning': '检测到目标 profile 没有 {pkg}，需要安装。若没有此插件，将无法从应用内再次切换 profile。',
     'confirm.cancel': '取消',
     'confirm.ok': '确认切换',
+    'confirm.managerSource': '目标缺少插件，安装方式：',
+    'confirm.source.copy': '从当前 profile 复制',
+    'confirm.source.npm': '从 NPM 拉取最新',
+    'tab.about': '关于',
+    'about.version': '版本',
+    'about.desc': 'DSH 整合包管理插件：.dspack 导出/导入、多 profile 切换，零官方源码改动。',
   },
   en: {
     nav: 'Modpacks',
@@ -141,9 +151,15 @@ const dict = {
     'confirm.from': 'current',
     'confirm.to': 'target',
     'confirm.firstTime': 'First switch: current folder will be archived as default',
-    'confirm.warning': 'Target profile has no {pkg}; it will be installed automatically. Without it you cannot switch again from inside the app.',
+    'confirm.warning': 'Target profile has no {pkg}; it must be installed. Without it you cannot switch again from inside the app.',
     'confirm.cancel': 'Cancel',
     'confirm.ok': 'Confirm switch',
+    'confirm.managerSource': 'Target profile is missing the plugin. Install via:',
+    'confirm.source.copy': 'Copy from current profile',
+    'confirm.source.npm': 'Pull latest from NPM',
+    'tab.about': 'About',
+    'about.version': 'Version',
+    'about.desc': 'DSH modpack plugin: .dspack export/import, multi-profile switching, zero official source changes.',
   },
 };
 
@@ -201,6 +217,7 @@ export function DspackSection({ t, packforge }) {
   const [exportContent, setExportContent] = useState({ skill: false, preset: false, instruction: false });
   const [loadedFor, setLoadedFor] = useState(null); // 已自动加载过配置的 profile 名
   const [confirm, setConfirm] = useState(null); // null | {from,to,hasManager,firstTime}
+  const [managerSource, setManagerSource] = useState('copy'); // 'copy' | 'npm'（目标缺管理器时的安装方式）
 
   const call = async (endpoint, payload) => {
     if (!rpc) return { ok: false, error: t('result.noRpc') };
@@ -246,6 +263,7 @@ export function DspackSection({ t, packforge }) {
   const askSwitch = async (name) => {
     const r = await call('profile/switch-check', { name });
     if (!r.ok) return showErr(r.error);
+    setManagerSource('copy');
     setConfirm({
       from: r.value.from,
       to: r.value.to,
@@ -259,7 +277,7 @@ export function DspackSection({ t, packforge }) {
     const name = confirm.to;
     setConfirm(null);
     setResult({ pending: true });
-    const r = await call('profile/switch', { name });
+    const r = await call('profile/switch', { name, managerSource });
     if (!r.ok) return showErr(r.error);
     showOk(r.value?.restarting
       ? `切换中：桌面将自动重启到「${name}」`
@@ -516,6 +534,11 @@ export function DspackSection({ t, packforge }) {
     },
     warnIcon: { flex: '0 0 auto', lineHeight: '18px', color: '#e8a23a', fontWeight: 700 },
     confirmBtns: { display: 'flex', justifyContent: 'flex-end', gap: 8 },
+    logoTile: {
+      width: 88, height: 88, borderRadius: 20, background: '#fff', color: '#4b7bec',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      boxShadow: '0 4px 16px rgba(0,0,0,0.28)', flex: '0 0 auto',
+    },
     btnPrimary: {
       height: 30, padding: '0 14px', borderRadius: 15, border: '1px solid #4b7bec', cursor: 'pointer',
       fontSize: 13, lineHeight: '18px', background: '#4b7bec', color: '#fff', fontWeight: 600, font: 'inherit',
@@ -650,7 +673,22 @@ export function DspackSection({ t, packforge }) {
     );
   };
 
-  const content = tab === 'manage' ? renderManage() : tab === 'export' ? renderExport() : renderMarket();
+  const renderLogo = () =>
+    h('div', { style: style.logoTile },
+      h('svg', { viewBox: '0 0 1024 1024', width: 52, height: 52, style: { display: 'block' } },
+        h('path', { d: LOGO_PATH, fill: 'currentColor' }),
+      ),
+    );
+
+  const renderAbout = () =>
+    h('div', { style: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '24px 0' } },
+      renderLogo(),
+      h('div', { style: { fontSize: 16, fontWeight: 700, lineHeight: '24px', color: 'var(--dsw-alias-label-primary)' } }, MANAGER_PKG),
+      h('p', { style: { ...style.line, margin: 0 } }, `${t('about.version')} ${VERSION}`),
+      h('p', { style: { ...style.line, margin: 0, maxWidth: 440, textAlign: 'center' } }, t('about.desc')),
+    );
+
+  const content = tab === 'manage' ? renderManage() : tab === 'export' ? renderExport() : tab === 'market' ? renderMarket() : renderAbout();
 
   const renderConfirm = () => {
     if (!confirm) return null;
@@ -674,6 +712,25 @@ export function DspackSection({ t, packforge }) {
         confirm.hasManager ? null : h('div', { style: style.warn },
           h('span', { style: style.warnIcon }, '!'),
           h('span', null, warning),
+        ),
+        confirm.hasManager ? null : h('div', { style: style.group },
+          h('span', { style: style.fieldLabel }, t('confirm.managerSource')),
+          h('label', { key: 'copy', style: style.row },
+            h('input', {
+              type: 'radio', name: 'managerSource', checked: managerSource === 'copy',
+              style: { width: 14, height: 14, cursor: 'pointer', accentColor: '#4b7bec' },
+              onChange: () => setManagerSource('copy'),
+            }),
+            h('span', { style: style.line }, t('confirm.source.copy')),
+          ),
+          h('label', { key: 'npm', style: style.row },
+            h('input', {
+              type: 'radio', name: 'managerSource', checked: managerSource === 'npm',
+              style: { width: 14, height: 14, cursor: 'pointer', accentColor: '#4b7bec' },
+              onChange: () => setManagerSource('npm'),
+            }),
+            h('span', { style: style.line }, t('confirm.source.npm')),
+          ),
         ),
         h('div', { style: style.confirmBtns },
           h('button', { type: 'button', style: style.btn, onClick: () => setConfirm(null) }, t('confirm.cancel')),
@@ -720,7 +777,7 @@ export function DspackSection({ t, packforge }) {
   return h(Fragment, null,
     h('div', { style: style.section },
     h('div', { style: style.tabs },
-      ['manage', 'export', 'market'].map((id) => h('button', {
+      ['manage', 'export', 'market', 'about'].map((id) => h('button', {
         key: id, type: 'button',
         style: tab === id ? { ...style.tab, ...style.tabActive } : style.tab,
         onClick: () => { setTab(id); if (id === 'market' && market === null) void loadMarket(); },

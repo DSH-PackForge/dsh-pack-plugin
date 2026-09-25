@@ -6,9 +6,12 @@
 import { build } from 'esbuild';
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 
+const require = createRequire(import.meta.url);
 const PACKAGE_ID = '@dsh-packforge/dsh-pack-plugin';
+const PACKAGE_VERSION = require('../package.json').version;
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ENTRY = path.join(ROOT, 'src', 'client.js');
 const OUT = path.join(ROOT, 'lib', 'client.js');
@@ -20,6 +23,7 @@ const result = await build({
   platform: 'browser',
   target: 'es2020',
   external: ['react', 'react/jsx-runtime', '@deepseek-ai/*'],
+  define: { __PACKAGE_VERSION__: JSON.stringify(PACKAGE_VERSION) },
   write: false,
   logLevel: 'warning',
 });

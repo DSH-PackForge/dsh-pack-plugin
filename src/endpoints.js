@@ -110,7 +110,10 @@ export const ENDPOINTS = {
 
   'profile/switch': async ({ runtime, payload }) => {
     const name = need(payload?.name, '缺少 profile 名');
-    return await switchProfile(runtime, name, { swapSkills: payload?.swapSkills !== false });
+    return await switchProfile(runtime, name, {
+      swapSkills: payload?.swapSkills !== false,
+      managerSource: payload?.managerSource === 'npm' ? 'npm' : 'copy',
+    });
   },
 
   // 切换前的只读预检：确认弹窗要显示的 from/to、目标是否已装管理器、是否首次切换。

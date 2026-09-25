@@ -36,7 +36,7 @@ async function exists(p) {
  * 把激活指针 desktop 换到目标 profile。
  * @returns {Promise<{active:string, method:'junction', requiresRestart:true, previous:string}>}
  */
-export async function switchProfile(runtime, target, { swapSkills = true, allowDelegate = true, onProgress } = {}) {
+export async function switchProfile(runtime, target, { swapSkills = true, allowDelegate = true, onProgress, managerSource = 'copy' } = {}) {
   const { profilesDir, home } = runtime;
   const desktop = path.join(profilesDir, ACTIVE_NAME);
   const targetDir = path.join(profilesDir, target);
@@ -60,7 +60,7 @@ export async function switchProfile(runtime, target, { swapSkills = true, allowD
     await writeProgress(home, { from: previous, to: target, firstTime, phase: 'running', steps: buildSteps(firstTime) });
     try {
       await setStep(home, 'install', 'running');
-      await ensureManagerInProfile(runtime, target);
+      await ensureManagerInProfile(runtime, target, { source: managerSource });
       await setStep(home, 'install', 'done');
     } catch (err) {
       await setPhase(home, 'failed', err?.message ?? String(err));
@@ -72,7 +72,7 @@ export async function switchProfile(runtime, target, { swapSkills = true, allowD
 
   // 2) 原地换指（非 win32 / helper 自身）：先迁装管理器，首次把 desktop 存档为 default，再建指针。
   //    helper 已在杀桌面后调用，rename 即便 EBUSY 也会被其轮询重试（LOCK_CODES 见 migrate-helper.js）。
-  await ensureManagerInProfile(runtime, target);
+  await ensureManagerInProfile(runtime, target, { source: managerSource });
   let st = await lstat(desktop);
   if (st && !st.isSymbolicLink()) {
     const defaultDir = path.join(profilesDir, 'default');
