@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import React, { Fragment } from 'react';
 import { registerSettingsSection, DspackSection } from '../src/settings.js';
+import { PROFILE_NAME_RE } from '../src/channel.js';
 
 /** mock DSH client slots 服务。 */
 function makeSlots() {
@@ -92,4 +93,11 @@ test('DspackSection 是 React 组件函数（可渲染出元素树）', () => {
   const children = el.props.children.filter(Boolean);
   assert.equal(children.length, 1);
   assert.equal(children[0].type, 'div'); // 主面板 section div
+});
+
+test('PROFILE_NAME_RE：kebab-case（小写字母数字 + 单连字符，如 aaa-bb-c）', () => {
+  const ok = ['aaa', 'aaa-bb-c', 'my-modpack-1', 'a1-b2-c3', 'x'];
+  const bad = ['', 'Aaa', 'aaa-bb-C', 'aaa_bb', 'aaa.bb', '-aaa', 'aaa-', 'aaa--bb', 'aaa bb', '中文'];
+  for (const n of ok) assert.ok(PROFILE_NAME_RE.test(n), `应通过：${n}`);
+  for (const n of bad) assert.ok(!PROFILE_NAME_RE.test(n), `应拒绝：${n}`);
 });

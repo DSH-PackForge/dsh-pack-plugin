@@ -5,6 +5,8 @@
 import {
   resolveProfileInput,
   exportFromWorkspace,
+  loadWorkspaceConfig,
+  saveWorkspaceConfig,
   inspectPack,
   installPack,
   resolvePackSource,
@@ -16,7 +18,7 @@ import fsp from 'node:fs/promises';
 import { getHost } from './host.js';
 import { listProfiles, createProfile, deleteProfile, readState, writeState, resolveActiveName } from './profiles.js';
 import { switchProfile } from './junction.js';
-import { CHANNEL } from './channel.js';
+import { CHANNEL, PROFILE_NAME_RE } from './channel.js';
 import { ACTIVE_NAME } from './runtime.js';
 import { checkManagerInProfile } from './ensure-manager.js';
 
@@ -25,7 +27,23 @@ const need = (v, msg) => {
   return String(v).trim();
 };
 
-const PROFILE_NAME_RE = /^[\w.-]+$/;
+// 导出/工作区配置共用的目标解析：默认当前激活 profile；名字优先在桌面 home（与切换列表同一套）里匹配，
+// 匹配不到再当路径/全局名兜底（CLI / AI 工具导出任意目录用）。
+async function resolveExportProfile(runtime, host, want) {
+  const profiles = await listProfiles(runtime);
+  const active = profiles.find((p) => p.active) ?? profiles[0] ?? null;
+  let profile = null;
+  if (want) {
+    profile = profiles.find((p) => p.name === want) ?? (await resolveProfileInput(host, want));
+  } else {
+    profile = active;
+  }
+  if (!profile) {
+    const names = profiles.map((p) => p.name).join(', ');
+    throw new Error(`找不到 profile「${want ?? ''}」。可用：${names || '（无）'}`);
+  }
+  return profile;
+}
 
 export const ENDPOINTS = {
   'runtime/get': async ({ runtime }) => ({
@@ -49,7 +67,7 @@ export const ENDPOINTS = {
 
   'profile/create': async ({ runtime, payload }) => {
     const name = need(payload?.name, '缺少 profile 名');
-    if (!PROFILE_NAME_RE.test(name)) throw new Error('profile 名只能含字母数字、下划线、点、连字符');
+    if (!PROFILE_NAME_RE.test(name)) throw new Error('profile 名只能含小写字母、数字、连字符，如 aaa-bb-c');
     const dir = await createProfile(runtime.home, name);
     return { name, dir };
   },
@@ -99,29 +117,19 @@ export const ENDPOINTS = {
 
   'pack/export': async ({ runtime, payload }) => {
     const host = getHost();
-    const profiles = await listProfiles(runtime);
-    const active = profiles.find((p) => p.active) ?? profiles[0] ?? null;
-    const want = payload?.profile ?? null;
-
-    // 导出目标：默认当前激活 profile；名字优先在桌面 home（与切换列表同一套）里匹配，
-    // 匹配不到再当路径/全局名兜底（CLI / AI 工具导出任意目录用）。
-    let profile = null;
-    if (want) {
-      profile = profiles.find((p) => p.name === want) ?? (await resolveProfileInput(host, want));
-    } else {
-      profile = active;
-    }
-
-    if (!profile) {
-      const names = profiles.map((p) => p.name).join(', ');
-      throw new Error(`找不到 profile「${want ?? ''}」。可用：${names || '（无）'}`);
-    }
+    const profile = await resolveExportProfile(runtime, host, payload?.profile ?? null);
 
     const r = await exportFromWorkspace(host, profile, {
       out: payload?.out,
       name: payload?.name,
       version: payload?.version,
+      displayName: payload?.displayName,
+      description: payload?.description,
+      author: payload?.author,
+      icon: payload?.icon,
       dshVersion: payload?.dshVersion,
+      profileName: payload?.profileName,
+      exportContent: payload?.exportContent,
       force: payload?.force === true,
       mode: payload?.mode,
       content: payload?.content,
@@ -136,6 +144,22 @@ export const ENDPOINTS = {
           version: r.manifest.version,
         }
       : { mode: 'repo', dir: r.dir, name: r.manifest.name, version: r.manifest.version, content: r.content };
+  },
+
+  // 读取某个 profile 的工作区配置（.dshpkcfg）；不存在/非法 → config: null。
+  'pack/config-load': async ({ runtime, payload }) => {
+    const host = getHost();
+    const profile = await resolveExportProfile(runtime, host, payload?.profile ?? null);
+    const config = await loadWorkspaceConfig(host, profile.dir);
+    return { profile: profile.name, dir: profile.dir, config };
+  },
+
+  // 保存某个 profile 的工作区配置（.dshpkcfg）；只落白名单字段、去 null/undefined。
+  'pack/config-save': async ({ runtime, payload }) => {
+    const host = getHost();
+    const profile = await resolveExportProfile(runtime, host, payload?.profile ?? null);
+    const path = await saveWorkspaceConfig(host, profile.dir, payload ?? {});
+    return { profile: profile.name, dir: profile.dir, path };
   },
 
   'pack/view': async ({ payload }) => {

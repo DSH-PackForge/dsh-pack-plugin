@@ -37,7 +37,10 @@ export async function packProfile(host, profile, opts = {}) {
   const homeDir = opts.home || host.joinPath(profile.dir, '..', '..');
   const homeFiles = (await scanProfile(host, homeDir)).files.filter((f) => !f.rel.startsWith('profiles/'));
   const homeSet = opts.homeInclude instanceof Set ? opts.homeInclude : (opts.homeInclude ? new Set(opts.homeInclude) : null);
-  const selectedHome = homeSet ? homeFiles.filter((f) => homeSet.has(f.rel)) : [];
+  // 前缀匹配：允许 homeInclude 传 `skills/` 等目录前缀（精确名或目录前缀皆可命中）。
+  const selectedHome = homeSet
+    ? homeFiles.filter((f) => [...homeSet].some((p) => f.rel === p || f.rel.startsWith(p)))
+    : [];
 
   const entries = {};
   for (const f of files) {

@@ -45,6 +45,23 @@ const dict = {
     'action.install': '安装',
     'action.switch': '切换',
     'action.create': '新建',
+    'action.save': '保存',
+    'action.load': '读取',
+    'field.profileName': '安装名（覆盖 manifest profileName）',
+    'field.mode': '导出形态',
+    'mode.dspack': '单文件（.dspack）',
+    'mode.repo': '源仓库',
+    'field.content': '仓库内容档',
+    'content.manifest': '仅清单（manifest.json）',
+    'content.readme': '清单 + README',
+    'content.full': '全套文件（overrides/ + release/）',
+    'group.content': '导出内容（上一级目录开关）',
+    'content.skill': '导出 skills/',
+    'content.preset': '导出 .agent-presets/',
+    'content.instruction': '导出 AGENTS.md',
+    'result.saved': '已保存工作区配置',
+    'result.loaded': '已读取工作区配置',
+    'result.noCfg': '该 profile 暂无已保存的工作区配置',
     'result.pending': '处理中…',
     'result.noRpc': '后端 RPC 不可用（connection 服务缺失）',
     'err.name': '请填写 profile 名',
@@ -154,7 +171,11 @@ export function registerSettingsSection(ctx, packforge = {}) {
   return true;
 }
 
-const META_FIELDS = ['name', 'version', 'displayName', 'description', 'author', 'icon', 'dshVersion', 'out'];
+const META_FIELDS = ['name', 'version', 'displayName', 'description', 'author', 'icon', 'profileName'];
+const OUTPUT_FIELDS = ['dshVersion', 'out'];
+const MODES = ['dspack', 'repo'];
+const CONTENT_LEVELS = ['manifest', 'readme', 'full'];
+const CONTENT_TOGGLES = ['skill', 'preset', 'instruction'];
 
 export function DspackSection({ t, packforge }) {
   const rpc = packforge?.rpc;
@@ -169,6 +190,10 @@ export function DspackSection({ t, packforge }) {
   const [market, setMarket] = useState(null); // null=未加载 undefined=加载中 {packs,error}
   const [meta, setMeta] = useState({});
   const [exportProfile, setExportProfile] = useState('');
+  const [mode, setMode] = useState('dspack');
+  const [contentLevel, setContentLevel] = useState('readme');
+  const [exportContent, setExportContent] = useState({ skill: false, preset: false, instruction: false });
+  const [loadedFor, setLoadedFor] = useState(null); // 已自动加载过配置的 profile 名
   const [confirm, setConfirm] = useState(null); // null | {from,to,hasManager,firstTime}
 
   const call = async (endpoint, payload) => {
@@ -245,27 +270,43 @@ export function DspackSection({ t, packforge }) {
     else showErr(r.error);
   };
 
+  // 弹窗：点「空整合包」/「导入新包」打开，收集名字/路径，校验通过才提交。
+  const openDialog = (type) => {
+    setFieldError('');
+    setSubmitting(false);
+    setDialog(type);
+  };
+
+  const closeDialog = () => {
+    setDialog(null);
+    setFieldError('');
+    setSubmitting(false);
+  };
+
   const doCreate = async () => {
     const name = newName.trim();
-    if (!name) return showErr(t('err.name'));
-    setResult({ pending: true });
+    if (!name) return setFieldError(t('err.name'));
+    if (!PROFILE_NAME_RE.test(name)) return setFieldError(t('err.nameInvalid'));
+    setSubmitting(true);
     const r = await call('profile/create', { name });
-    if (!r.ok) return showErr(r.error);
-    showOk(`已创建 profile「${name}」`);
+    setSubmitting(false);
+    if (!r.ok) return setFieldError(r.error);
     setNewName('');
-    setMode(null);
+    closeDialog();
+    showOk(`已创建 profile「${name}」`);
     void refresh();
   };
 
   const doImport = async () => {
     const src = source.trim();
-    if (!src) return showErr(t('err.source'));
-    setResult({ pending: true });
+    if (!src) return setFieldError(t('err.source'));
+    setSubmitting(true);
     const r = await call('pack/install', { source: src });
-    if (!r.ok) return showErr(r.error);
-    showOk(`已安装 profile「${r.value.profileName}」→ ${r.value.dir}`);
+    setSubmitting(false);
+    if (!r.ok) return setFieldError(r.error);
     setSource('');
-    setMode(null);
+    closeDialog();
+    showOk(`已安装 profile「${r.value.profileName}」→ ${r.value.dir}`);
     void refresh();
   };
 
@@ -293,16 +334,80 @@ export function DspackSection({ t, packforge }) {
   const doExportFromForm = async () => {
     setResult({ pending: true });
     const overrides = {};
-    for (const k of META_FIELDS) {
+    for (const k of [...META_FIELDS, ...OUTPUT_FIELDS]) {
       const v = (meta[k] ?? '').trim();
       if (v) overrides[k] = v;
     }
-    if (exportProfile) overrides.profile = exportProfile;
+    overrides.profile = exportProfile;
+    overrides.mode = mode;
+    overrides.content = contentLevel;
+    overrides.exportContent = {
+      skill: !!exportContent.skill,
+      preset: !!exportContent.preset,
+      instruction: !!exportContent.instruction,
+    };
     const r = await call('pack/export', overrides);
     if (!r.ok) return showErr(r.error);
     const v = r.value;
     showOk(v.mode === 'repo' ? `已导出仓库 ${v.dir}（${v.name}@${v.version}）` : `已导出 ${v.output}（${v.size} 字节）`);
   };
+
+  // 把 .dshpkcfg 回填进表单：空串跳过（保留表单默认值）；无 config 则清空回填。
+  const applyConfig = (cfg) => {
+    const next = {};
+    for (const k of [...META_FIELDS, ...OUTPUT_FIELDS]) {
+      const v = cfg?.[k];
+      if (typeof v === 'string' && v.trim()) next[k] = v;
+    }
+    setMeta(next);
+    setMode(MODES.includes(cfg?.mode) ? cfg.mode : 'dspack');
+    setContentLevel(CONTENT_LEVELS.includes(cfg?.content) ? cfg.content : 'readme');
+    const ec = cfg?.exportContent;
+    setExportContent({
+      skill: ec?.skill === true,
+      preset: ec?.preset === true,
+      instruction: ec?.instruction === true,
+    });
+  };
+
+  const loadConfig = async (name, silent = false) => {
+    const r = await call('pack/config-load', { profile: name });
+    if (!r.ok) return showErr(r.error);
+    setLoadedFor(name);
+    if (!r.value.config) {
+      applyConfig(null); // 切到无配置的 profile：清空表单残留
+      if (!silent) showOk(t('result.noCfg'));
+      return;
+    }
+    applyConfig(r.value.config);
+    if (!silent) showOk(t('result.loaded'));
+  };
+
+  const doLoadConfig = () => { if (exportProfile) void loadConfig(exportProfile, false); };
+
+  const doSaveConfig = async () => {
+    if (!exportProfile) return;
+    setResult({ pending: true });
+    const cfg = {};
+    for (const k of [...META_FIELDS, ...OUTPUT_FIELDS]) cfg[k] = (meta[k] ?? '').trim();
+    cfg.mode = mode;
+    cfg.content = contentLevel;
+    cfg.exportContent = {
+      skill: !!exportContent.skill,
+      preset: !!exportContent.preset,
+      instruction: !!exportContent.instruction,
+    };
+    const r = await call('pack/config-save', { profile: exportProfile, ...cfg });
+    if (!r.ok) return showErr(r.error);
+    showOk(t('result.saved') + ' → ' + r.value.path);
+  };
+
+  // 切到导出 tab / 换 profile 时自动加载工作区配置（每个 profile 只自动加载一次；「读取」按钮可强制重读）。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (tab !== 'export' || !exportProfile || loadedFor === exportProfile) return;
+    void loadConfig(exportProfile, true);
+  }, [tab, exportProfile, loadedFor]);
 
   const style = {
     section: { display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 720, padding: '8px 0' },
@@ -322,7 +427,6 @@ export function DspackSection({ t, packforge }) {
       color: 'var(--dsw-alias-label-primary)', font: 'inherit', outline: 'none', boxSizing: 'border-box',
     },
     row: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
-    grow: { flex: 1 },
     btn: {
       height: 30, padding: '0 12px', borderRadius: 15, border: '1px solid var(--dsw-alias-border-l2)', cursor: 'pointer',
       fontSize: 13, lineHeight: '18px', background: 'var(--dsw-alias-bg-layer-1)',
@@ -429,22 +533,10 @@ export function DspackSection({ t, packforge }) {
       h('section', { key: 'create', style: style.sectionBox },
         h('h3', { style: style.groupTitle }, t('create.title')),
         h('div', { style: style.row },
-          h('button', { type: 'button', style: style.btn, disabled: !rpc, onClick: () => setMode(mode === 'create' ? null : 'create') }, t('action.newEmpty')),
-          h('button', { type: 'button', style: style.btn, disabled: !rpc, onClick: () => setMode(mode === 'import' ? null : 'import') }, t('action.import')),
+          h('button', { type: 'button', style: style.btn, disabled: !rpc, onClick: () => openDialog('create') }, t('action.newEmpty')),
+          h('button', { type: 'button', style: style.btn, disabled: !rpc, onClick: () => openDialog('import') }, t('action.import')),
           h('button', { type: 'button', style: style.btn, disabled: !rpc, onClick: () => { setTab('market'); void loadMarket(); } }, t('action.market')),
         ),
-        mode === 'create'
-          ? h('div', { style: style.row },
-              h('input', { style: { ...style.input, ...style.grow }, placeholder: t('field.newName'), value: newName, onInput: (e) => setNewName(e.target.value) }),
-              h('button', { type: 'button', style: style.btnSmall, disabled: !rpc, onClick: doCreate }, t('action.create')),
-            )
-          : null,
-        mode === 'import'
-          ? h('div', { style: style.row },
-              h('input', { style: { ...style.input, ...style.grow }, placeholder: t('field.source'), value: source, onInput: (e) => setSource(e.target.value) }),
-              h('button', { type: 'button', style: style.btnSmall, disabled: !rpc, onClick: doImport }, t('action.install')),
-            )
-          : null,
       ),
       // 区域 3：已安装的整合包
       h('section', { key: 'installed', style: style.sectionBoxLast },
@@ -458,19 +550,50 @@ export function DspackSection({ t, packforge }) {
     h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
       h('div', { style: style.group },
         h('div', { style: style.groupTitle }, t('group.meta')),
-        ...META_FIELDS.slice(0, 6).map(fieldInput),
+        ...META_FIELDS.map(fieldInput),
       ),
       h('div', { style: style.group },
         h('div', { style: style.groupTitle }, t('group.output')),
-        ...META_FIELDS.slice(6).map(fieldInput),
+        ...OUTPUT_FIELDS.map(fieldInput),
         h('label', { style: style.field },
           h('span', { style: style.fieldLabel }, t('field.profile')),
           h('select', { style: style.input, value: exportProfile, onChange: (e) => setExportProfile(e.target.value) },
             profiles.map((p) => h('option', { key: p.name, value: p.name }, p.name + (p.active ? `（${t('profile.active')}）` : ''))),
           ),
         ),
+        h('label', { style: style.field },
+          h('span', { style: style.fieldLabel }, t('field.mode')),
+          h('select', { style: style.input, value: mode, onChange: (e) => setMode(e.target.value) },
+            MODES.map((m) => h('option', { key: m, value: m }, t('mode.' + m))),
+          ),
+        ),
+        mode === 'repo'
+          ? h('label', { style: style.field },
+              h('span', { style: style.fieldLabel }, t('field.content')),
+              h('select', { style: style.input, value: contentLevel, onChange: (e) => setContentLevel(e.target.value) },
+                CONTENT_LEVELS.map((c) => h('option', { key: c, value: c }, t('content.' + c))),
+              ),
+            )
+          : null,
       ),
-      h('button', { type: 'button', style: style.btn, disabled: !rpc, onClick: doExportFromForm }, t('action.export')),
+      h('div', { style: style.group },
+        h('div', { style: style.groupTitle }, t('group.content')),
+        ...CONTENT_TOGGLES.map((k) =>
+          h('label', { key: k, style: style.row },
+            h('input', {
+              type: 'checkbox', checked: !!exportContent[k],
+              style: { width: 16, height: 16, cursor: 'pointer', accentColor: '#4b7bec' },
+              onChange: (e) => setExportContent((ec) => ({ ...ec, [k]: e.target.checked })),
+            }),
+            h('span', { style: style.line }, t('content.' + k)),
+          ),
+        ),
+      ),
+      h('div', { style: style.row },
+        h('button', { type: 'button', style: style.btn, disabled: !rpc, onClick: doSaveConfig }, t('action.save')),
+        h('button', { type: 'button', style: style.btn, disabled: !rpc, onClick: doLoadConfig }, t('action.load')),
+        h('button', { type: 'button', style: style.btn, disabled: !rpc, onClick: doExportFromForm }, t('action.export')),
+      ),
     );
 
   const renderMarket = () => {
@@ -534,6 +657,40 @@ export function DspackSection({ t, packforge }) {
     );
   };
 
+  // 创建/导入弹窗：收集名字（校验 kebab-case）或 .dspack 路径，错误就地展示。
+  const renderDialog = () => {
+    if (!dialog) return null;
+    const isCreate = dialog === 'create';
+    const value = isCreate ? newName : source;
+    const submit = () => { if (!submitting) void (isCreate ? doCreate() : doImport()); };
+    return h('div', { style: style.overlay, onClick: closeDialog },
+      h('div', { style: style.modal, onClick: (e) => e.stopPropagation() },
+        h('h3', { style: style.modalTitle }, isCreate ? t('dialog.createTitle') : t('dialog.importTitle')),
+        h('label', { style: style.field },
+          h('span', { style: style.fieldLabel }, isCreate ? t('field.newName') : t('field.source')),
+          h('input', {
+            style: style.input,
+            value,
+            autoFocus: true,
+            placeholder: isCreate ? t('field.newName') : t('field.source'),
+            onInput: (e) => {
+              if (isCreate) setNewName(e.target.value); else setSource(e.target.value);
+              if (fieldError) setFieldError('');
+            },
+            onKeyDown: (e) => { if (e.key === 'Enter') submit(); },
+          }),
+        ),
+        h('p', { style: style.hint }, isCreate ? t('hint.nameFormat') : t('hint.import')),
+        fieldError ? h('p', { style: style.err }, fieldError) : null,
+        h('div', { style: style.confirmBtns },
+          h('button', { type: 'button', style: style.btn, disabled: submitting, onClick: closeDialog }, t('confirm.cancel')),
+          h('button', { type: 'button', style: style.btnPrimary, disabled: !rpc || submitting, onClick: submit },
+            submitting ? t('result.pending') : (isCreate ? t('action.create') : t('action.install'))),
+        ),
+      ),
+    );
+  };
+
   return h(Fragment, null,
     h('div', { style: style.section },
     h('div', { style: style.tabs },
@@ -551,5 +708,6 @@ export function DspackSection({ t, packforge }) {
       : null,
     ),
     renderConfirm(),
+    renderDialog(),
   );
 }
