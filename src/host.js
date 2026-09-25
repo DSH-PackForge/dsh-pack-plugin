@@ -1,16 +1,17 @@
-// host 侧单例 Host（NodeHost：真实文件系统 + node:crypto/child_process）。
-// 工具 execute 全部走它，与 CLI / GUI 使用同一份 @dsh-packforge/core，行为一致。
-import { NodeHost } from '@dsh-packforge/host-node';
+// 宿主 I/O：Node 侧的 Host 实现（@dsh-packforge/core 的唯一依赖注入边界）。
+//
+// core 自己不做任何 node:fs / node:crypto / child_process 操作，全部经 Host 注入；
+// 宿主插件跑在 Node 里，用收编进来的 NodeHost（见 ./host-node.js）即可。
+import { NodeHost } from './host-node.js';
 
-let host = null;
+let host;
 
-/** 取（惰性构造 + 可注入的）host。 */
+/** 惰性单例；测试可注入替身（setHost）。 */
 export function getHost() {
-  host ??= new NodeHost();
+  if (!host) host = new NodeHost();
   return host;
 }
 
-/** 测试或宿主注入自定义 Host。 */
 export function setHost(h) {
   host = h;
 }
