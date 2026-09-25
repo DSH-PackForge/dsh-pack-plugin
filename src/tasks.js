@@ -32,6 +32,10 @@ const STAGE_DEFS = {
     ['pack', '打包'],
     ['write', '写盘'],
   ],
+  create: [
+    ['init', '初始化 profile'],
+    ['manager', '迁装管理器（基本插件）'],
+  ],
 };
 
 const tasks = new Map();

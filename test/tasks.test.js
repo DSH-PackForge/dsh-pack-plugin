@@ -26,6 +26,11 @@ test('createTask：export 建导出阶段', () => {
   assert.deepEqual(get(id).stages.map((s) => s.id), ['scan', 'manifest', 'collect', 'pack', 'write']);
 });
 
+test('createTask：create 建创建阶段', () => {
+  const id = createTask({ kind: 'create', home });
+  assert.deepEqual(get(id).stages.map((s) => s.id), ['init', 'manager']);
+});
+
 test('progressBridge：推进阶段、更新 label、忽略未知阶段、不回退已完成阶段', () => {
   const id = createTask({ kind: 'export', home });
   const p = progressBridge(id);

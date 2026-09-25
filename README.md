@@ -37,7 +37,7 @@ src/core/（vendored）                   src/locale（可选）
 | `runtime/get` | 返回 profile 运行时信息（home / profilesDir / profileDir / patchPath / startedBundles） |
 | `config/get` / `config/set` | 读写 home 下的 `dsh-packforge.json` 状态 |
 | `profile/list` | 列出 profiles（desktop junction 指向项不重复列出，真实 desktop 目录标为 `default`） |
-| `profile/create` / `profile/delete` | 新建 / 删除 profile |
+| `profile/create` / `profile/delete` | 新建 profile（非阻塞，立即返回 `taskId`；空整合包自带管理器基线，进度见任务中心）/ 删除 profile |
 | `profile/switch` | 切换激活 profile（junction 换指 + 可选 home skills 换指） |
 | `pack/export` | 导出 `.dspack` / 源仓库（非阻塞，立即返回 `taskId`，进度见任务中心） |
 | `pack/config-load` / `pack/config-save` | 读取 / 保存某 profile 的工作区配置 `.dshpkcfg` |

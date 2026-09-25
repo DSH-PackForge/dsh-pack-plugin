@@ -20,7 +20,7 @@ import { listProfiles, createProfile, deleteProfile, readState, writeState, reso
 import { switchProfile } from './junction.js';
 import { CHANNEL, PROFILE_NAME_RE } from './channel.js';
 import { ACTIVE_NAME } from './runtime.js';
-import { checkManagerInProfile } from './ensure-manager.js';
+import { checkManagerInProfile, ensureManagerInProfile } from './ensure-manager.js';
 import * as tasks from './tasks.js';
 
 const need = (v, msg) => {
@@ -69,8 +69,37 @@ export const ENDPOINTS = {
   'profile/create': async ({ runtime, payload }) => {
     const name = need(payload?.name, '缺少 profile 名');
     if (!PROFILE_NAME_RE.test(name)) throw new Error('profile 名只能含小写字母、数字、连字符，如 aaa-bb-c');
-    const dir = await createProfile(runtime.home, name);
-    return { name, dir };
+    // 同步预检重名（真正写盘/迁装放进任务里异步跑）。
+    const dir = path.join(runtime.profilesDir, name);
+    if (await fsp.stat(dir).then(() => true, () => false)) {
+      throw new Error(`profile「${name}」已存在`);
+    }
+
+    // 空整合包也要有基本插件基线：写最小 package.json + 迁装管理器（+fflate），否则切过去就是单程票、
+    // 且 switch 会因缺 package.json 抛错。与 install/export 一致走任务中心，关面板不丢进度。
+    const id = tasks.createTask({ kind: 'create', title: `创建 ${name}`, home: runtime?.home });
+    tasks.enqueue(async () => {
+      const progress = tasks.progressBridge(id);
+      try {
+        progress('init', '创建目录与 package.json');
+        const target = await createProfile(runtime.home, name);
+        await fsp.writeFile(path.join(target, 'package.json'), `${JSON.stringify({
+          name: `dsh-profile-${name}`,
+          private: true,
+          dependencies: {},
+          dsh: { profile: { bundles: [] } },
+        }, null, 2)}\n`);
+        progress('manager', '迁装管理器（基本插件）');
+        await ensureManagerInProfile(runtime, name);
+        tasks.finish(id, { ok: true, title: `创建 ${name}`, result: { name, dir: target, managerInstalled: true } });
+      } catch (e) {
+        // 建到一半失败：清掉目录，不留残废 profile。
+        await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
+        tasks.finish(id, { ok: false, error: String(e?.message ?? e) });
+      }
+    }).catch(() => {});
+    void tasks.ensureWindow(runtime?.home);
+    return { taskId: id };
   },
 
   'profile/delete': async ({ runtime, payload }) => {

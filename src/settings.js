@@ -318,8 +318,8 @@ export function DspackSection({ t, packforge }) {
     if (!r.ok) return setFieldError(r.error);
     setNewName('');
     closeDialog();
-    showOk(`已创建 profile「${name}」`);
-    void refresh();
+    showOk(t('result.taskStarted'));
+    watch(r.value.taskId);
   };
 
   const doImport = async () => {
