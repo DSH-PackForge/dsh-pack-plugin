@@ -75,17 +75,19 @@ export async function setPhase(home, phase, error = null) {
 }
 
 /**
- * 派生进度窗口（electron GUI，不带 ELECTRON_RUN_AS_NODE）。返回 pid 供 helper 的杀树脚本排除，
- * 否则杀桌面整棵树时会连窗口一起杀掉。
+ * 派生进度窗口（electron GUI，不带 ELECTRON_RUN_AS_NODE）。返回 pid 供 helper 的杀树脚本排除。
  *
- * 注意：不要加 detached / windowsHide。实测（Windows + electron@44）这两个标志会让 GUI 进程
- * 活着但不显示窗口（DETACHED_PROCESS / CREATE_NO_WINDOW 副作用）。窗口靠杀树脚本的 pid 排除
- * 存活，Windows 下父进程被杀不会连带子进程，无需 detached。
+ * 两个实测结论（Windows + electron@44）：
+ * 1. 必须 detached:true —— 否则 host 被 helper 的 TerminateProcess 杀掉时，窗口作为 host 的
+ *    子进程会被 Windows 连带杀死（父进程一死窗口立即消失，杀树脚本排除再彻底也没用）。
+ * 2. 绝不能 windowsHide:true —— CREATE_NO_WINDOW 会让窗口进程活着但 GUI 不显示。
+ * 杀树脚本仍按 pid 排除本窗口整棵子树（见 migrate-helper.js 的 $skip），防止直接 Stop-Process 它。
  */
 export function spawnProgressWindow(home) {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE; // 防御：绝不把 RUN_AS_NODE 漏给 GUI 进程
   const child = spawn(process.execPath, [MAIN, `--progress-file=${progressPath(home)}`], {
+    detached: true,
     stdio: 'ignore',
     env,
   });
