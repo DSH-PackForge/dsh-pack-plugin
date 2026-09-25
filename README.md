@@ -1,5 +1,7 @@
 # @dsh-packforge/dsh-pack-plugin
 
+[![整合包必备](https://dsh-packforge.github.io/dsh-pack-market/badges/plugins/DSH-PackForge-dsh-pack-plugin-zh.svg)](https://dsh-packforge.github.io/dsh-pack-market/#/plugin/DSH-PackForge%2Fdsh-pack-plugin) [![Essential for packs](https://dsh-packforge.github.io/dsh-pack-market/badges/plugins/DSH-PackForge-dsh-pack-plugin-en.svg)](https://dsh-packforge.github.io/dsh-pack-market/#/plugin/DSH-PackForge%2Fdsh-pack-plugin)
+
 DSH 整合包（`.dspack`）的**纯方案 B 插件 bundle**：一个自包含的独立 npm 包，注入官方 DeepSeek Harness 桌面端，提供 `.dspack` 导出 / 安装 / 多 profile 切换 / 市场浏览 / 工作区配置 / 任务中心。**只做 UI + 后端，不做 AI 驱动的整合包管理。**
 
 - **零官方源码改动**：不改 `apps/desktop` / `apps/desktop-host`。
