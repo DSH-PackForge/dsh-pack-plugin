@@ -8,6 +8,7 @@ import path from 'node:path';
 import { ACTIVE_NAME } from './runtime.js';
 import { readState, writeState, resolveActiveName } from './profiles.js';
 import { spawnMigrationHelper } from './migrate.js';
+import { ensureManagerInProfile } from './ensure-manager.js';
 
 const JUNCTION_KIND = process.platform === 'win32' ? 'junction' : 'dir';
 const HOME_SKILLS = 'skills';
@@ -47,6 +48,10 @@ export async function switchProfile(runtime, target, { swapSkills = true, allowD
   if (!(await isDir(targetDir))) {
     throw new Error(`profile「${target}」不存在（${targetDir}）`);
   }
+
+  // 0) 迁装管理器：确保目标 profile 也带 @dsh-packforge/dsh-pack-plugin，否则切过去就切不回来。
+  //    必须在 rename/unlink 之前做（rename 前 desktop 还是来源本体，之后就读不到了）。
+  await ensureManagerInProfile(runtime, target);
 
   const previous = (await resolveActiveName(runtime)) ?? 'default';
 
