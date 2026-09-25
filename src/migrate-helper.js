@@ -118,16 +118,34 @@ async function relaunch() {
   // 否则 electron 会被当成纯 node 跑、窗口起不来。
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  if (relaunchCmd) {
-    spawn('cmd.exe', ['/d', '/s', '/c', relaunchCmd], {
-      cwd: relaunchCwd || undefined, detached: true, stdio: 'ignore', windowsHide: true, env,
-    }).unref();
+
+  // 重启进程是 helper 的普通子进程（helper 自身已 detach 脱离 electron 树），Windows 下父进程
+  // 正常退出不会杀子进程，所以绝不能再加 detached:true——它会打断 cmd.exe→pnpm.cmd→node 的
+  // stdio 句柄继承，导致 pnpm 输出/执行丢失、桌面起不来。输出重定向到 relaunch.log 便于排查。
+  async function launch(cmd, args, opts = {}) {
+    const logPath = path.join(home, '.dsh-pack', 'relaunch.log');
+    await fsp.mkdir(path.dirname(logPath), { recursive: true });
+    const logFd = await fsp.open(logPath, 'a');
+    const child = spawn(cmd, args, {
+      ...opts,
+      stdio: ['ignore', logFd.fd, logFd.fd],
+      windowsHide: true,
+      env,
+    });
+    child.unref();
+    // 宽限 3s：cmd.exe→pnpm.cmd→tsx→electron 链需要时间真正建立；父进程此刻退出不杀子进程，
+    // 但链尚未建立就退出会让重启中断，且 logFd 需等子进程继承完成后再关。
+    await sleep(3000);
+    await logFd.close().catch(() => {});
     return true;
+  }
+
+  if (relaunchCmd) {
+    return await launch('cmd.exe', ['/d', '/s', '/c', relaunchCmd], { cwd: relaunchCwd || undefined });
   }
   const cmdline = await captureCommandLine(electronPid);
   if (cmdline) {
-    spawn(cmdline, { shell: true, detached: true, stdio: 'ignore', windowsHide: true, env }).unref();
-    return true;
+    return await launch(cmdline, [], { shell: true });
   }
   return false;
 }
