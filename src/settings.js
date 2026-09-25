@@ -272,9 +272,9 @@ export function DspackSection({ t, packforge }) {
     row: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
     grow: { flex: 1 },
     btn: {
-      height: 30, padding: '0 12px', borderRadius: 15, border: 'none', cursor: 'pointer',
-      fontSize: 13, lineHeight: '18px', background: 'var(--dsw-alias-button-primary-fill)',
-      color: 'var(--dsw-alias-label-primary-foreground)', font: 'inherit',
+      height: 30, padding: '0 12px', borderRadius: 15, border: '1px solid var(--dsw-alias-border-l2)', cursor: 'pointer',
+      fontSize: 13, lineHeight: '18px', background: 'var(--dsw-alias-bg-layer-1)',
+      color: 'var(--dsw-alias-label-primary)', font: 'inherit',
       width: 'fit-content', flex: '0 0 auto',
     },
     btnSmall: {
@@ -411,7 +411,7 @@ export function DspackSection({ t, packforge }) {
     tab === 'manage' ? h('p', { style: style.hint }, t('hint.restart')) : null,
     result
       ? h('p', { style: result.ok === false ? style.err : style.ok },
-          result.pending ? t('result.pending') : (result.ok ? '✓ ' : '✗ ') + (result.text ?? result.error))
+          result.pending ? t('result.pending') : (result.text ?? result.error))
       : null,
   );
 }
