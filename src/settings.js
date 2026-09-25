@@ -23,6 +23,7 @@ const dict = {
     'action.newEmpty': '空整合包',
     'action.import': '导入新包',
     'action.market': '浏览市场',
+    'action.refresh': '刷新',
     'installed.title': '已安装的整合包',
     'action.delete': '删除',
     'hint.restart': '点切换后重启生效',
@@ -72,6 +73,7 @@ const dict = {
     'action.newEmpty': 'Empty pack',
     'action.import': 'Import pack',
     'action.market': 'Browse market',
+    'action.refresh': 'Refresh',
     'installed.title': 'Installed modpacks',
     'action.delete': 'Delete',
     'hint.restart': 'Takes effect after restart',
@@ -324,6 +326,15 @@ export function DspackSection({ t, packforge }) {
     },
     listName: { fontSize: 13, lineHeight: '20px', color: 'var(--dsw-alias-label-primary)' },
     line: { margin: 0, fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)' },
+    marketHead: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+    refreshBtn: {
+      width: 26, height: 26, padding: 0, borderRadius: '50%',
+      border: '1px solid var(--dsw-alias-border-l2)', cursor: 'pointer',
+      background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-secondary)',
+      fontSize: 15, lineHeight: '18px', font: 'inherit',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      flex: '0 0 auto',
+    },
     sectionBox: { display: 'flex', flexDirection: 'column', gap: 8, paddingBottom: 14, marginBottom: 14, borderBottom: '1px solid var(--dsw-alias-border-l2)' },
     sectionBoxLast: { display: 'flex', flexDirection: 'column', gap: 8 },
     hint: { margin: '4px 0 0', fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-label-tertiary)' },
@@ -446,22 +457,30 @@ export function DspackSection({ t, packforge }) {
     );
 
   const renderMarket = () => {
-    if (market === undefined) return h('p', { style: style.line }, t('market.loading'));
-    if (market.error) return h('p', { style: style.err }, `${t('market.error')}：${market.error}`);
-    const packs = market.packs ?? [];
-    if (packs.length === 0) return h('p', { style: style.line }, t('market.empty'));
+    const packs = market?.packs ?? [];
+    let body;
+    if (market === undefined) body = h('p', { style: style.line }, t('market.loading'));
+    else if (market.error) body = h('p', { style: style.err }, `${t('market.error')}：${market.error}`);
+    else if (packs.length === 0) body = h('p', { style: style.line }, t('market.empty'));
+    else body = h('ul', { style: style.list },
+      packs.map((p) => h('li', { key: (p.id || p.name) + '@' + (p.version ?? ''), style: style.listItem },
+        h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2 } },
+          h('span', { style: style.listName }, p.displayName || p.name),
+          p.description ? h('span', { style: style.line }, p.description) : null,
+          h('span', { style: style.line }, `${p.author ? p.author + ' · ' : ''}${p.version || '?'}${p.dshVersion ? ' · DSH ' + p.dshVersion : ''}`),
+        ),
+        h('button', { type: 'button', style: style.btnSmall, disabled: !rpc, onClick: () => doInstallFromMarket(p) }, t('action.install')),
+      )),
+    );
     return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
-      h('p', { style: style.line }, `市场共 ${packs.length} 个整合包`),
-      h('ul', { style: style.list },
-        packs.map((p) => h('li', { key: (p.id || p.name) + '@' + (p.version ?? ''), style: style.listItem },
-          h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2 } },
-            h('span', { style: style.listName }, p.displayName || p.name),
-            p.description ? h('span', { style: style.line }, p.description) : null,
-            h('span', { style: style.line }, `${p.author ? p.author + ' · ' : ''}${p.version || '?'}${p.dshVersion ? ' · DSH ' + p.dshVersion : ''}`),
-          ),
-          h('button', { type: 'button', style: style.btnSmall, disabled: !rpc, onClick: () => doInstallFromMarket(p) }, t('action.install')),
-        )),
+      h('div', { style: style.marketHead },
+        packs.length > 0 ? h('p', { style: style.line }, `市场共 ${packs.length} 个整合包`) : null,
+        h('button', {
+          type: 'button', style: style.refreshBtn, disabled: !rpc || market === undefined,
+          title: t('action.refresh'), onClick: () => void loadMarket(),
+        }, '↻'),
       ),
+      body,
     );
   };
 
