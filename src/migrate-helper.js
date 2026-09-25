@@ -171,6 +171,23 @@ async function relaunch() {
   return false;
 }
 
+// relaunch 的 pnpm→tsx→electron 链要 ~15s 才真正拉起 electron；若只按 relaunch 的 3s 宽限就
+// 标「完成」，进度窗口关了桌面却还没起来，用户得干等十几秒。这里轮询等新 electron 主进程出现。
+async function checkDesktopUp() {
+  const script = `$m = Get-CimInstance Win32_Process -Filter "Name='electron.exe'" | Where-Object { $_.CommandLine -notmatch '--type=' -and $_.CommandLine -notmatch '--expose-internals' }; if ($m) { 'UP' } else { 'DOWN' }`;
+  const r = await run('powershell', ['-NoProfile', '-Command', script]);
+  return r.stdout === 'UP';
+}
+
+async function waitForDesktopReady() {
+  if (process.platform !== 'win32') return;
+  const deadline = Date.now() + 25000;
+  while (Date.now() < deadline) {
+    if (await checkDesktopUp()) return;
+    await sleep(500);
+  }
+}
+
 async function main() {
   await log(`migrate start: target=${target} profiles=${profilesDir} electronPid=${electronPid} progressPid=${progressPid} relaunchCmd=${relaunchCmd} relaunchCwd=${relaunchCwd}`);
   await sleep(2000); // 宽限：让宿主把「migrating」响应 flush 给 UI，再动手杀
@@ -183,6 +200,7 @@ async function main() {
   await log(`switch done: active=${r.active} method=${r.method}`);
   await setStep(home, 'launch', 'running');
   const ok = await relaunch();
+  if (ok) await waitForDesktopReady();
   await setStep(home, 'launch', 'done');
   await setPhase(home, 'done');
   await log(`relaunch: ${ok ? 'spawned' : 'skipped'}`);
