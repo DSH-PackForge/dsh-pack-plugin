@@ -3,14 +3,12 @@
 // 每个 handler 收 { ctx, runtime, payload, signal, peer }，返回纯值；
 // 抛错由 rpc.js 统一转成 { ok:false, error }。core 的 .dspack 格式逻辑经 Host 注入调用。
 import {
-  discoverProfiles,
   resolveProfileInput,
   exportFromWorkspace,
   inspectPack,
   installPack,
   resolvePackSource,
   readMarketIndex,
-  normalizeMarketPack,
   DEFAULT_MARKET_INDEX,
 } from './core/index.js';
 import { getHost } from './host.js';
@@ -63,14 +61,41 @@ export const ENDPOINTS = {
     return await switchProfile(runtime, name, { swapSkills: payload?.swapSkills !== false });
   },
 
-  'pack/export': async ({ payload }) => {
+  'profile/open-dir': async ({ runtime, payload }) => {
     const host = getHost();
-    const profile = payload?.profile ? await resolveProfileInput(host, payload.profile) : null;
-    if (!profile) {
-      const { profiles } = await discoverProfiles(host);
-      const names = profiles.map((p) => p.name).join(', ');
-      throw new Error(`找不到 profile「${payload?.profile ?? ''}」。可用：${names || '（无）'}`);
+    const profiles = await listProfiles(runtime);
+    const name = payload?.name;
+    const target = name
+      ? profiles.find((p) => p.name === name)
+      : (profiles.find((p) => p.active) ?? profiles[0]);
+    if (!target) throw new Error(`找不到 profile「${name ?? ''}」`);
+    const cmd = process.platform === 'win32' ? 'explorer'
+      : process.platform === 'darwin' ? 'open' : 'xdg-open';
+    const r = await host.exec(cmd, [target.dir]);
+    if (r.error) throw new Error(`打开目录失败：${r.error}`);
+    return { name: target.name, dir: target.dir };
+  },
+
+  'pack/export': async ({ runtime, payload }) => {
+    const host = getHost();
+    const profiles = await listProfiles(runtime);
+    const active = profiles.find((p) => p.active) ?? profiles[0] ?? null;
+    const want = payload?.profile ?? null;
+
+    // 导出目标：默认当前激活 profile；名字优先在桌面 home（与切换列表同一套）里匹配，
+    // 匹配不到再当路径/全局名兜底（CLI / AI 工具导出任意目录用）。
+    let profile = null;
+    if (want) {
+      profile = profiles.find((p) => p.name === want) ?? (await resolveProfileInput(host, want));
+    } else {
+      profile = active;
     }
+
+    if (!profile) {
+      const names = profiles.map((p) => p.name).join(', ');
+      throw new Error(`找不到 profile「${want ?? ''}」。可用：${names || '（无）'}`);
+    }
+
     const r = await exportFromWorkspace(host, profile, {
       out: payload?.out,
       name: payload?.name,
@@ -112,12 +137,12 @@ export const ENDPOINTS = {
     }
   },
 
-  'pack/install': async ({ payload }) => {
+  'pack/install': async ({ runtime, payload }) => {
     const host = getHost();
     const r = await installPack(host, {
       source: need(payload?.source, '缺少 .dspack 路径或 URL'),
       name: payload?.name,
-      profilesRoot: payload?.profilesRoot,
+      profilesRoot: payload?.profilesRoot ?? runtime?.profilesDir,
       force: payload?.force === true,
       dryRun: payload?.dryRun === true,
       noInstall: payload?.noInstall === true,
@@ -134,6 +159,6 @@ export const ENDPOINTS = {
   'pack/market': async ({ payload }) => {
     const host = getHost();
     const index = await readMarketIndex(host, payload?.indexPath ?? DEFAULT_MARKET_INDEX);
-    return { packs: (index ?? []).map((e) => normalizeMarketPack(e, payload?.locale ?? 'zh-CN')) };
+    return { packs: index?.packs ?? [], error: index?.error ?? null };
   },
 };

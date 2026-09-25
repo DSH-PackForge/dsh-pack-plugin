@@ -9,6 +9,8 @@ export const name = 'dsh-packforge';
 export const inject = ['slots', 'locale', 'connection'];
 
 export function apply(ctx) {
+  // 临时验证日志：确认 client 面被浏览器 shell 挂载 + 服务注入到位。
+  console.error('[dsh-pack][client] apply slots=' + (!!ctx?.slots) + ' locale=' + (!!ctx?.locale) + ' connection=' + (!!ctx?.connection) + ' rpc=' + (!!ctx?.connection?.rpc));
   const rpc = createRpc(ctx);
   registerSettingsSection(ctx, { rpc });
 }

@@ -6,8 +6,12 @@
   "license": "MIT",
   "main": "src/index.js",
   "exports": {
-    ".": "./src/index.js",
-    "./client": "./lib/client.js"
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml"
   },
   "files": [
     "src",

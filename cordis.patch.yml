@@ -1,7 +1,9 @@
 # dsh-pack-plugin bundle patch：插入 host 插件。
 # host 面（`exports["."]`）是 cordis 插件
-#   `{ name: "dspack-host", inject: ["connection"], apply }`：
-#   ctx.connection.rpc.handle('/dsh-pack', ...) → 设置面板 UI 的静默直连 RPC（纯 UI + 后端，无 AI 面）。
+#   `{ name: "dspack-host", inject: ["connection", "webServer"], apply }`：
+#   inject webServer 后在 webServer 上挂 /dsh-pack 前缀路由 → 设置面板 UI 的静默直连
+#   RPC（纯 UI + 后端，无 AI 面）。connection 用于复用 Host/Origin + 浏览器鉴权栅栏。
 - insert:
     - id: dspack-host
       name: '@dsh-packforge/dsh-pack-plugin'
+      inject: [connection, webServer]
