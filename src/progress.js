@@ -77,14 +77,16 @@ export async function setPhase(home, phase, error = null) {
 /**
  * 派生进度窗口（electron GUI，不带 ELECTRON_RUN_AS_NODE）。返回 pid 供 helper 的杀树脚本排除，
  * 否则杀桌面整棵树时会连窗口一起杀掉。
+ *
+ * 注意：不要加 detached / windowsHide。实测（Windows + electron@44）这两个标志会让 GUI 进程
+ * 活着但不显示窗口（DETACHED_PROCESS / CREATE_NO_WINDOW 副作用）。窗口靠杀树脚本的 pid 排除
+ * 存活，Windows 下父进程被杀不会连带子进程，无需 detached。
  */
 export function spawnProgressWindow(home) {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE; // 防御：绝不把 RUN_AS_NODE 漏给 GUI 进程
   const child = spawn(process.execPath, [MAIN, `--progress-file=${progressPath(home)}`], {
-    detached: true,
     stdio: 'ignore',
-    windowsHide: true,
     env,
   });
   child.on('error', () => {});
