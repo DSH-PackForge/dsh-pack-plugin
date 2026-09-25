@@ -6,6 +6,7 @@
 // slots 契约（已从 DSH 源码确证）：
 //   ctx.slots.inject("settings.section", () => ctx.slots.register(options, Component))
 import { createElement as h, useState, useEffect, Fragment } from 'react';
+import { PROFILE_NAME_RE } from './channel.js';
 
 const NS = 'dspack';
 const MANAGER_PKG = '@dsh-packforge/dsh-pack-plugin';
@@ -48,6 +49,11 @@ const dict = {
     'result.noRpc': '后端 RPC 不可用（connection 服务缺失）',
     'err.name': '请填写 profile 名',
     'err.source': '请填写 .dspack 路径或 URL',
+    'err.nameInvalid': '名字格式不对：只能用小写字母、数字和连字符（如 aaa-bb-c）',
+    'hint.nameFormat': '小写字母、数字，用连字符分隔，如 aaa-bb-c',
+    'hint.import': '.dspack 文件路径或 URL',
+    'dialog.createTitle': '创建空的整合包',
+    'dialog.importTitle': '导入新包',
     'profile.active': '当前',
     'market.loading': '加载市场中…',
     'market.empty': '市场暂无内容',
@@ -98,6 +104,11 @@ const dict = {
     'result.noRpc': 'Backend RPC unavailable (no connection service)',
     'err.name': 'Please fill a profile name',
     'err.source': 'Please fill a .dspack path or URL',
+    'err.nameInvalid': 'Invalid name: lowercase letters, digits and hyphens only (e.g. aaa-bb-c)',
+    'hint.nameFormat': 'Lowercase letters and digits separated by hyphens, e.g. aaa-bb-c',
+    'hint.import': '.dspack file path or URL',
+    'dialog.createTitle': 'Create empty modpack',
+    'dialog.importTitle': 'Import modpack',
     'profile.active': 'current',
     'market.loading': 'Loading market…',
     'market.empty': 'Market is empty',
@@ -150,9 +161,11 @@ export function DspackSection({ t, packforge }) {
   const [tab, setTab] = useState('manage');
   const [profiles, setProfiles] = useState([]);
   const [result, setResult] = useState(null); // null | {pending:true} | {ok:true,text} | {ok:false,error}
-  const [mode, setMode] = useState(null); // 'create' | 'import'
+  const [dialog, setDialog] = useState(null); // null | 'create' | 'import'
   const [newName, setNewName] = useState('');
   const [source, setSource] = useState('');
+  const [fieldError, setFieldError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const [market, setMarket] = useState(null); // null=未加载 undefined=加载中 {packs,error}
   const [meta, setMeta] = useState({});
   const [exportProfile, setExportProfile] = useState('');
@@ -267,7 +280,11 @@ export function DspackSection({ t, packforge }) {
     const src = pack?.downloadUrl || pack?.urls?.[0];
     if (!src) return showErr('该包没有可下载地址');
     setResult({ pending: true });
-    const r = await call('pack/install', { source: src });
+    const r = await call('pack/install', {
+      source: src,
+      expectedSha256: pack?.sha256 || undefined,
+      expectedSize: pack?.size || undefined,
+    });
     if (!r.ok) return showErr(r.error);
     showOk(`已安装 profile「${r.value.profileName}」→ ${r.value.dir}`);
     void refresh();

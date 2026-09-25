@@ -167,6 +167,9 @@ export const ENDPOINTS = {
       force: payload?.force === true,
       dryRun: payload?.dryRun === true,
       noInstall: payload?.noInstall === true,
+      // 市场安装时透传索引里的 sha256/size，交给 installPack 做完整性校验（防篡改/坏档）。
+      expectedSha256: payload?.expectedSha256 || undefined,
+      expectedSize: payload?.expectedSize,
     });
     return {
       profileName: r.profileName,
