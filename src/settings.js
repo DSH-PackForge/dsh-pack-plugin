@@ -6,7 +6,7 @@
 // slots 契约（已从 DSH 源码确证）：
 //   ctx.slots.inject("settings.section", () => ctx.slots.register(options, Component))
 import { createElement as h, useState, useEffect, Fragment } from 'react';
-import { PROFILE_NAME_RE } from './channel.js';
+import { PROFILE_NAME_RE, RESERVED_PROFILE_NAMES } from './channel.js';
 
 const NS = 'dspack';
 const MANAGER_PKG = '@dsh-packforge/dsh-pack-plugin';
@@ -67,6 +67,7 @@ const dict = {
     'err.name': '请填写 profile 名',
     'err.source': '请填写 .dspack 路径或 URL',
     'err.nameInvalid': '名字格式不对：只能用小写字母、数字和连字符（如 aaa-bb-c）',
+    'err.nameReserved': '「{name}」是保留名，不能作为 profile 名',
     'hint.nameFormat': '小写字母、数字，用连字符分隔，如 aaa-bb-c',
     'hint.import': '.dspack 文件路径或 URL',
     'dialog.createTitle': '创建空的整合包',
@@ -122,6 +123,7 @@ const dict = {
     'err.name': 'Please fill a profile name',
     'err.source': 'Please fill a .dspack path or URL',
     'err.nameInvalid': 'Invalid name: lowercase letters, digits and hyphens only (e.g. aaa-bb-c)',
+    'err.nameReserved': '"{name}" is a reserved name and cannot be used as a profile name',
     'hint.nameFormat': 'Lowercase letters and digits separated by hyphens, e.g. aaa-bb-c',
     'hint.import': '.dspack file path or URL',
     'dialog.createTitle': 'Create empty modpack',
@@ -287,6 +289,7 @@ export function DspackSection({ t, packforge }) {
     const name = newName.trim();
     if (!name) return setFieldError(t('err.name'));
     if (!PROFILE_NAME_RE.test(name)) return setFieldError(t('err.nameInvalid'));
+    if (RESERVED_PROFILE_NAMES.includes(name)) return setFieldError(t('err.nameReserved').replace('{name}', name));
     setSubmitting(true);
     const r = await call('profile/create', { name });
     setSubmitting(false);

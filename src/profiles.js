@@ -8,6 +8,7 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { PROFILES_DIR, ACTIVE_NAME } from './runtime.js';
+import { RESERVED_PROFILE_NAMES } from './channel.js';
 
 const STATE_FILE = 'dsh-packforge.json';
 
@@ -75,6 +76,9 @@ export async function listProfiles(runtime) {
 }
 
 export async function createProfile(home, name) {
+  if (RESERVED_PROFILE_NAMES.includes(name)) {
+    throw new Error(`「${name}」是保留名，不能作为 profile 名`);
+  }
   const dir = path.join(home, PROFILES_DIR, name);
   await fsp.mkdir(dir, { recursive: true });
   return dir;
