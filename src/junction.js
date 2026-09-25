@@ -7,10 +7,13 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { ACTIVE_NAME } from './runtime.js';
 import { readState, writeState, resolveActiveName } from './profiles.js';
+import { spawnMigrationHelper } from './migrate.js';
 
 const JUNCTION_KIND = process.platform === 'win32' ? 'junction' : 'dir';
 const HOME_SKILLS = 'skills';
 const STASH_DIR = '.dsh-pack';
+// Windows 目录被占用时的 rename/symlink 错误码（EBUSY 最常见，EPERM/EACCES 是别名）。
+const LOCK_CODES = ['EBUSY', 'EPERM', 'EACCES'];
 
 async function lstat(p) {
   try {
@@ -33,7 +36,7 @@ async function exists(p) {
  * 把激活指针 desktop 换到目标 profile。
  * @returns {Promise<{active:string, method:'junction', requiresRestart:true, previous:string}>}
  */
-export async function switchProfile(runtime, target, { swapSkills = true } = {}) {
+export async function switchProfile(runtime, target, { swapSkills = true, allowDelegate = true } = {}) {
   const { profilesDir, home } = runtime;
   const desktop = path.join(profilesDir, ACTIVE_NAME);
   const targetDir = path.join(profilesDir, target);
@@ -54,7 +57,17 @@ export async function switchProfile(runtime, target, { swapSkills = true } = {})
     if (await exists(defaultDir)) {
       throw new Error('profiles/default 已存在，无法把 desktop 存档为 default');
     }
-    await fsp.rename(desktop, defaultDir);
+    try {
+      await fsp.rename(desktop, defaultDir);
+    } catch (err) {
+      // Windows：运行中的桌面持有 desktop 内句柄，rename 必 EBUSY。
+      // 派生脱管迁移进程在「桌面退出→重启」间隙完成，宿主返回 migrating 提示自动重启。
+      if (allowDelegate && process.platform === 'win32' && LOCK_CODES.includes(err?.code)) {
+        spawnMigrationHelper(runtime, target);
+        return { active: target, method: 'junction', requiresRestart: true, previous, migrating: true };
+      }
+      throw err;
+    }
     st = null;
   }
 

@@ -1,0 +1,150 @@
+// 脱管迁移进程（机制 B 执行体）。
+//
+// 由 migrate.js 用 `ELECTRON_RUN_AS_NODE=1 process.execPath 本文件` 派生，与宿主进程树脱钩。
+// 流程：留出响应 flush 宽限 → 杀 electron 主进程树 → 轮询 rename(desktop→default) 直到锁释放 →
+//       switchProfile 完成建 junction + 落 state → 重启桌面 → 退出。
+import fsp from 'node:fs/promises';
+import path from 'node:path';
+import { spawn, execFile } from 'node:child_process';
+import { switchProfile } from './junction.js';
+
+// —— 参数解析（--key=value，值由 spawn 原样传入，无 shell 拆词）——
+const argv = {};
+for (const a of process.argv.slice(2)) {
+  const m = /^--([^=]+)=(.*)$/.exec(a);
+  if (m) argv[m[1]] = m[2];
+}
+const electronPid = Number(argv['electron-pid']) || 0;
+const profilesDir = argv['profiles-dir'];
+const home = argv['home'];
+const target = argv['target'];
+const relaunchCmd = argv['relaunch-cmd'] ?? '';
+const relaunchCwd = argv['relaunch-cwd'] ?? '';
+
+const LOG = path.join(home, '.dsh-pack', 'migrate.log');
+async function log(msg) {
+  try {
+    await fsp.mkdir(path.dirname(LOG), { recursive: true });
+    await fsp.appendFile(LOG, `[${new Date().toISOString()}] ${msg}\n`);
+  } catch { /* 日志失败不影响迁移 */ }
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const LOCK_CODES = ['EBUSY', 'EPERM', 'EACCES'];
+
+function run(cmd, args, opts = {}) {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { windowsHide: true, ...opts }, (err, stdout, stderr) => {
+      resolve({ err, stdout: (stdout || '').trim(), stderr: (stderr || '').trim() });
+    });
+  });
+}
+
+async function captureCommandLine(pid) {
+  if (process.platform !== 'win32' || !pid) return null;
+  const script = `Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" | Select-Object -ExpandProperty CommandLine`;
+  const r = await run('powershell', ['-NoProfile', '-Command', script]);
+  return r.err ? null : (r.stdout || null);
+}
+
+// 杀整条桌面启动链。绝不能用 taskkill /T（会连 helper 自己一起杀）；也不能只杀 electron
+// 主进程后代——锁其实被启动器 tsx scripts/dev.ts（electron 主进程的父）握着，它要慢慢退出
+// 才释放锁。正确做法：从主进程沿父链上溯到启动器链顶端（node/electron/cmd），杀整条链的树，
+// 仍排除 helper 自身与运行本脚本的 powershell，并停在 bash（调用方的 shell）之前。
+function killScript(mainPid, selfPid) {
+  return `
+$main = ${mainPid}
+$self = ${selfPid}
+$all = @(Get-CimInstance Win32_Process)
+$parent = @{}; $name = @{}
+foreach ($p in $all) { $parent[$p.ProcessId] = $p.ParentProcessId; $name[$p.ProcessId] = $p.Name }
+$root = $main
+$cur = $main
+while ($true) {
+  $par = $parent[$cur]
+  if (-not $par) { break }
+  if ($name[$par] -notmatch '^(node|electron|cmd|conhost)') { break }
+  $root = $par
+  $cur = $par
+}
+$desc = New-Object 'System.Collections.Generic.List[int]'
+$q = New-Object 'System.Collections.Generic.List[int]'
+$q.Add($root)
+while ($q.Count -gt 0) {
+  $n = $q[0]; $q.RemoveAt(0)
+  foreach ($p in $all) {
+    if ($parent[$p.ProcessId] -eq $n) { $desc.Add($p.ProcessId); $q.Add($p.ProcessId) }
+  }
+}
+foreach ($p in $desc) {
+  if ($p -eq $self -or $p -eq $PID) { continue }
+  Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
+}
+Stop-Process -Id $root -Force -ErrorAction SilentlyContinue
+`;
+}
+
+async function killElectronTree(mainPid) {
+  if (process.platform === 'win32' && mainPid) {
+    await run('powershell', ['-NoProfile', '-Command', killScript(mainPid, process.pid)]);
+    return;
+  }
+  if (mainPid) { try { process.kill(mainPid, 'SIGTERM'); } catch { /* 已退出 */ } }
+}
+
+/** 轮询 switchProfile 直到锁释放（桌面被 kill 后 rename 才不再 EBUSY）。 */
+async function waitForLockRelease() {
+  const runtime = { profilesDir, home };
+  const deadline = Date.now() + 60000;
+  let attempts = 0;
+  for (;;) {
+    try {
+      return await switchProfile(runtime, target, { swapSkills: true, allowDelegate: false });
+    } catch (err) {
+      attempts++;
+      if (attempts === 1 || attempts % 10 === 0) {
+        await log(`retry #${attempts} code=${err?.code} msg=${err?.message}`);
+      }
+      if (!LOCK_CODES.includes(err?.code)) throw err;
+      if (Date.now() > deadline) throw err;
+      await sleep(300);
+    }
+  }
+}
+
+async function relaunch() {
+  if (process.platform !== 'win32') return false;
+  // 关键：不能把派生本 helper 的 ELECTRON_RUN_AS_NODE 漏给重新拉起的桌面，
+  // 否则 electron 会被当成纯 node 跑、窗口起不来。
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  if (relaunchCmd) {
+    spawn('cmd.exe', ['/d', '/s', '/c', relaunchCmd], {
+      cwd: relaunchCwd || undefined, detached: true, stdio: 'ignore', windowsHide: true, env,
+    }).unref();
+    return true;
+  }
+  const cmdline = await captureCommandLine(electronPid);
+  if (cmdline) {
+    spawn(cmdline, { shell: true, detached: true, stdio: 'ignore', windowsHide: true, env }).unref();
+    return true;
+  }
+  return false;
+}
+
+async function main() {
+  await log(`migrate start: target=${target} profiles=${profilesDir} electronPid=${electronPid} relaunchCmd=${relaunchCmd} relaunchCwd=${relaunchCwd}`);
+  await sleep(2000); // 宽限：让宿主把「migrating」响应 flush 给 UI，再动手杀
+  await killElectronTree(electronPid);
+  await log('electron tree killed, waiting for lock release');
+  const r = await waitForLockRelease();
+  await log(`switch done: active=${r.active} method=${r.method}`);
+  const ok = await relaunch();
+  await log(`relaunch: ${ok ? 'spawned' : 'skipped'}`);
+  process.exit(0);
+}
+
+main().catch(async (err) => {
+  await log(`migrate FAILED: ${err?.stack ?? err}`);
+  process.exit(1);
+});

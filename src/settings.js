@@ -171,7 +171,9 @@ export function DspackSection({ t, packforge }) {
     setResult({ pending: true });
     const r = await call('profile/switch', { name });
     if (!r.ok) return showErr(r.error);
-    showOk(`已切换到「${name}」，重启 DSH 后生效`);
+    showOk(r.value?.migrating
+      ? `首次迁移中：桌面将自动重启完成切换到「${name}」`
+      : `已切换到「${name}」，重启 DSH 后生效`);
     void refresh();
   };
 
