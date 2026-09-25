@@ -30,10 +30,19 @@ export async function readProgress(home) {
   }
 }
 
-export async function writeProgress(home, patch) {
+// —— 写串行化 ——
+// progress.json 是读-改-写（read-modify-write），多个调用方（onProgress 的 fire-and-forget setStep、
+// main 的 await setStep/setPhase）并发时会产生竞态：后读到的旧快照覆盖先写的更新，导致「重新创建链接」
+// 已 done 又被 running 覆盖、与「拉起」一起转圈。这里把所有写操作放进同一条 promise 链，读-改-写整体串行。
+let chain = Promise.resolve();
+function withLock(fn) {
+  const run = chain.then(fn, fn);
+  chain = run.then(() => {}, () => {});
+  return run;
+}
+
+async function commit(home, next) {
   const file = progressPath(home);
-  const cur = (await readProgress(home)) ?? {};
-  const next = { ...cur, ...patch, updatedAt: Date.now() };
   await fsp.mkdir(path.dirname(file), { recursive: true });
   const tmp = `${file}.tmp`;
   await fsp.writeFile(tmp, JSON.stringify(next));
@@ -46,6 +55,13 @@ export async function writeProgress(home, patch) {
   return next;
 }
 
+export function writeProgress(home, patch) {
+  return withLock(async () => {
+    const cur = (await readProgress(home)) ?? {};
+    return commit(home, { ...cur, ...patch, updatedAt: Date.now() });
+  });
+}
+
 /** 时间线步骤（每次返回全新对象数组）。firstTime 时插入「移动默认目录」。 */
 export function buildSteps(firstTime) {
   const ids = ['install', 'kill'];
@@ -54,19 +70,22 @@ export function buildSteps(firstTime) {
   return ids.map((id) => ({ id, label: LABELS[id], status: 'pending' }));
 }
 
-/** 按 id 改一步状态；不存在的 id（如非首切的 move）静默跳过。 */
-export async function setStep(home, id, status) {
-  const p = await readProgress(home);
-  if (!p || !Array.isArray(p.steps)) return null;
-  let changed = false;
-  for (const s of p.steps) {
-    if (s.id === id && s.status !== status) {
-      s.status = status;
-      changed = true;
+/** 按 id 改一步状态；不存在的 id（如非首切的 move）静默跳过。读写全程在锁内，保证顺序。
+ *  注意：不能在锁内再调 writeProgress（它会再次 withLock 造成嵌套死锁），故直接 commit。 */
+export function setStep(home, id, status) {
+  return withLock(async () => {
+    const p = await readProgress(home);
+    if (!p || !Array.isArray(p.steps)) return null;
+    let changed = false;
+    for (const s of p.steps) {
+      if (s.id === id && s.status !== status) {
+        s.status = status;
+        changed = true;
+      }
     }
-  }
-  if (!changed) return p;
-  return writeProgress(home, { steps: p.steps });
+    if (!changed) return p;
+    return commit(home, { ...p, updatedAt: Date.now() });
+  });
 }
 
 /** 收尾：phase 到 done/failed；failed 附 error 供窗口显示。 */
