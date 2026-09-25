@@ -1,6 +1,7 @@
 import { parseDspack, decodeText } from './dspack.js';
 import { validateManifest, coordsToPkgDeps, sanitizeSlug } from './manifest.js';
 import { listInstalledDshVersions } from './discovery.js';
+import { storeHomeRel } from './home-store.js';
 
 /**
  * 一键安装：读取本地/URL 的 .dspack → 校验头 & manifest → 按 type 分支安装。
@@ -79,7 +80,7 @@ async function installProfile(host, manifest, entries, opts, progress, profilesR
     progress('extract', '写入 overrides/ 与 package.json');
     await materializePackage(host, target, manifest, entries);
     // home/ → $DSH_HOME 根（上一级目录内容：全局 skill / 预设），与 overrides/（profile 根）并列。
-    await materializeHome(host, host.joinPath(profilesRoot, '..'), entries);
+    await materializeHome(host, host.joinPath(profilesRoot, '..'), entries, profileName);
 
     let installed = false;
     let reconcile = null;
@@ -249,13 +250,13 @@ async function materializePackage(host, dir, manifest, entries) {
   }
 }
 
-/** 单 profile 包携带的 home 级内容：home/* → $DSH_HOME 根（上一级目录）。 */
-async function materializeHome(host, homeRoot, entries) {
+/** 单 profile 包携带的 home 级内容：home/* → $DSH_HOME 根；skills / .agent-presets 落到 .dsh-pack/<store>/<profileName>/（换指 slot）。 */
+async function materializeHome(host, homeRoot, entries, profileName) {
   for (const [entryPath, data] of Object.entries(entries)) {
     if (!entryPath.startsWith('home/')) continue;
     const rel = safeRel(entryPath.slice('home/'.length));
     if (!rel) continue;
-    await host.writeFile(host.joinPath(homeRoot, rel), data);
+    await host.writeFile(host.joinPath(homeRoot, storeHomeRel(rel, profileName)), data);
   }
 }
 

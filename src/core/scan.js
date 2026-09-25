@@ -1,4 +1,5 @@
 import { isExcluded } from './security.js';
+import { HOME_ARTIFACTS } from './home-store.js';
 
 /**
  * 递归扫描 Profile 目录（主机无关版）：
@@ -43,6 +44,12 @@ async function walk(host, dir, rel, files, excluded) {
     const relPath = rel ? `${rel}/${entry.name}` : entry.name;
 
     if (entry.type === 'symlink') {
+      // home 根下的 skills / .agent-presets 是换指 junction：当目录继续遍历（rel 仍记 skills/...）。
+      // 其余 symlink（如 profiles/desktop）照旧跳过。
+      if (rel === '' && HOME_ARTIFACTS.has(entry.name)) {
+        await walk(host, entry.abs, relPath, files, excluded);
+        continue;
+      }
       excluded.push({ rel: relPath, abs: entry.abs, reason: 'symlink' });
       continue;
     }

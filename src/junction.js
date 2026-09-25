@@ -10,9 +10,9 @@ import { readState, writeState, resolveActiveName } from './profiles.js';
 import { spawnMigrationHelper } from './migrate.js';
 import { ensureManagerInProfile } from './ensure-manager.js';
 import { spawnProgressWindow, writeProgress, buildSteps, setStep, setPhase } from './progress.js';
+import { HOME_ARTIFACT_STORE } from './core/home-store.js';
 
 const JUNCTION_KIND = process.platform === 'win32' ? 'junction' : 'dir';
-const HOME_SKILLS = 'skills';
 const STASH_DIR = '.dsh-pack';
 
 async function lstat(p) {
@@ -93,9 +93,11 @@ export async function switchProfile(runtime, target, { swapSkills = true, allowD
   await fsp.symlink(targetDir, desktop, JUNCTION_KIND);
   onProgress?.('link', 'done');
 
-  // 3) home 级 skills 解包/回退（目标 profile 带 skills 才动，不轻易碰用户的 home 级 skills）。
+  // 3) home 级 skills / .agent-presets 换指（各 artifact 独立判断首次迁移，与 desktop 解耦）。
   if (swapSkills) {
-    await swapHomeSkills(home, previous, targetDir);
+    for (const artifact of Object.keys(HOME_ARTIFACT_STORE)) {
+      await repointHomeArtifact(home, artifact, previous, target);
+    }
   }
 
   // 4) 落 state。
@@ -107,22 +109,31 @@ export async function switchProfile(runtime, target, { swapSkills = true, allowD
   return { active: target, method: 'junction', requiresRestart: true, previous };
 }
 
-// skills 是 home 级（$DSH_HOME/skills），不在 profile 目录里（官方源码确证）。
-// 切换时把当前 home 级 skills 暂存回「上一个 profile」名下，再把目标 profile 里打包的 skills 解到 home 级，
-// 这样切回上一个 profile 时能原样恢复。
-async function swapHomeSkills(home, previousName, targetDir) {
-  const homeSkills = path.join(home, HOME_SKILLS);
-  const targetSkills = path.join(targetDir, HOME_SKILLS);
-  if (!(await isDir(targetSkills))) return; // 目标没带 skills → 不动用户 home 级 skills
+// skills / .agent-presets 是 home 级（$DSH_HOME/<artifact>），不在 profile 目录里（官方源码确证）。
+// 切换 = 把 <artifact> 这个 junction 指到 .dsh-pack/<store>/<target>；首次切换时若它还是真实目录，
+// 先存档到 .dsh-pack/<store>/<previous>（活目录优先：rm -r 掉旧 stash/同名 slot 再 rename）。
+// 每个 artifact 各自 lstat 判断，与 desktop 的 firstTime 解耦——desktop 已迁、skills 未迁也能各迁各的。
+async function repointHomeArtifact(home, artifact, previousName, targetName) {
+  const store = HOME_ARTIFACT_STORE[artifact];
+  const link = path.join(home, artifact);
+  const storeDir = path.join(home, STASH_DIR, store);
+  const target = path.join(storeDir, targetName);
 
-  const stash = path.join(home, STASH_DIR, 'skills', previousName || 'default');
-  if (await isDir(homeSkills)) {
-    await fsp.mkdir(path.dirname(stash), { recursive: true });
-    await fsp.rm(stash, { recursive: true, force: true });
-    await fsp.rename(homeSkills, stash);
+  const st = await lstat(link);
+  if (st && !st.isSymbolicLink()) {
+    // 首次迁移：真实目录存档到「上一个 profile」名下。
+    const prev = path.join(storeDir, previousName || 'default');
+    await fsp.mkdir(storeDir, { recursive: true });
+    await fsp.rm(prev, { recursive: true, force: true });
+    await fsp.rename(link, prev);
   }
-  await fsp.rm(homeSkills, { recursive: true, force: true });
-  await fsp.cp(targetSkills, homeSkills, { recursive: true });
+
+  // 换指：删旧指针（红线 unlink，不是 rm -r）→ 保证目标 slot 存在 → 建 junction（绝对目标）。
+  if (st && st.isSymbolicLink()) {
+    await fsp.unlink(link);
+  }
+  await fsp.mkdir(target, { recursive: true });
+  await fsp.symlink(target, link, JUNCTION_KIND);
 }
 
 /** 机制 B（兜底）：junction 不可用时的脱管切换器。先走机制 A，此路径后续接线。 */

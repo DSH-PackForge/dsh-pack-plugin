@@ -36,6 +36,8 @@ const DENY_EXACT = new Set([
   'settings.yaml',
   // 导出工作区配置快照（本工具写入，不进包）
   '.dshpkcfg',
+  // home 级换指 slot 与运行时状态（skills/.agent-presets 真实数据 + 进度/迁移日志，不进包）
+  '.dsh-pack',
 ]);
 
 /** 命中扩展名即排除（密钥/证书类） */
