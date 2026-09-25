@@ -1,0 +1,122 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>切换中</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    padding: 16px 18px 18px;
+    font-family: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #1e1f24; color: #e8e9ed;
+    user-select: none; -webkit-user-select: none;
+  }
+  .title { font-size: 15px; font-weight: 600; text-align: center; margin: 2px 0 12px; letter-spacing: 3px; }
+  .current {
+    text-align: center; font-size: 17px; font-weight: 700; color: #6ab7ff;
+    margin: 0 0 16px; min-height: 24px;
+  }
+  .current .dots { display: inline-block; animation: blink 1.2s steps(2, start) infinite; }
+  @keyframes blink { to { visibility: hidden; } }
+  .timeline { display: flex; flex-direction: column; gap: 10px; }
+  .step { display: flex; align-items: center; gap: 10px; }
+  .dot {
+    width: 22px; height: 22px; border-radius: 50%; flex: 0 0 auto;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; color: #fff; background: #3a3c43;
+  }
+  .step.done .dot { background: #2ea44f; }
+  .step.failed .dot { background: #d3383a; }
+  .step.pending .dot { background: #3a3c43; color: #6b6d76; }
+  .step.running .dot {
+    background: transparent;
+    border: 2px solid #6ab7ff; border-top-color: transparent;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .label { font-size: 14px; line-height: 20px; }
+  .step.pending .label { color: #6b6d76; }
+  .step.done .label { color: #9aa0aa; }
+  .step.running .label { color: #e8e9ed; font-weight: 600; }
+  .step.failed .label { color: #ff8b8c; }
+  .mark { margin-left: auto; font-size: 12px; color: #6b6d76; }
+  .step.done .mark { color: #2ea44f; }
+  .step.failed .mark { color: #d3383a; }
+  .error { margin-top: 10px; font-size: 12px; line-height: 18px; color: #ff8b8c; word-break: break-all; }
+</style>
+</head>
+<body>
+  <div class="title">切换中</div>
+  <div class="current" id="current"></div>
+  <div class="timeline" id="timeline"></div>
+<script>
+const fs = require('node:fs');
+const q = new URLSearchParams(location.search);
+const file = q.get('file');
+const currentEl = document.getElementById('current');
+const timelineEl = document.getElementById('timeline');
+const DOT_MARK = { done: '✓', running: '', pending: '○', failed: '✗' };
+const TAIL = { done: '完成', running: '进行中', failed: '失败', pending: '待办' };
+let lastRaw = null;
+
+function render(data) {
+  const steps = Array.isArray(data.steps) ? data.steps : [];
+  const running = steps.find((s) => s.status === 'running');
+  currentEl.innerHTML = running
+    ? '正在：' + escapeHtml(running.label) + '<span class="dots">…</span>'
+    : (data.phase === 'done' ? '完成' : data.phase === 'failed' ? '切换失败' : '准备中…');
+
+  timelineEl.textContent = '';
+  for (const s of steps) {
+    const st = s.status || 'pending';
+    const row = document.createElement('div');
+    row.className = 'step ' + st;
+
+    const dot = document.createElement('div');
+    dot.className = 'dot';
+    dot.textContent = st === 'running' ? '' : (DOT_MARK[st] || '○');
+
+    const label = document.createElement('div');
+    label.className = 'label';
+    label.textContent = s.label;
+
+    const mark = document.createElement('div');
+    mark.className = 'mark';
+    mark.textContent = TAIL[st] || '';
+
+    row.appendChild(dot);
+    row.appendChild(label);
+    row.appendChild(mark);
+    timelineEl.appendChild(row);
+  }
+  if (data.phase === 'failed' && data.error) {
+    const err = document.createElement('div');
+    err.className = 'error';
+    err.textContent = String(data.error);
+    timelineEl.appendChild(err);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+function tick() {
+  let raw = null;
+  try { raw = fs.readFileSync(file, 'utf8'); } catch { /* 尚未写入 */ }
+  if (raw === lastRaw) return;
+  lastRaw = raw;
+  let data = null;
+  try { data = raw ? JSON.parse(raw) : null; } catch { return; }
+  if (data) render(data);
+}
+
+setInterval(tick, 200);
+tick();
+</script>
+</body>
+</html>

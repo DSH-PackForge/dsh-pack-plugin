@@ -26,7 +26,7 @@ function detectDevRepoRoot(profilesDir) {
  * 派生脱管迁移进程。宿主应立即把返回值（restarting）回给 UI，然后等待桌面被 helper 杀掉重启。
  * @returns {Promise<number|undefined>} helper 的 pid
  */
-export function spawnMigrationHelper(runtime, target) {
+export function spawnMigrationHelper(runtime, target, { progressPid } = {}) {
   const electronPid = process.ppid; // 宿主进程的父 = electron 主进程（进程树已确证）
   const args = [
     HELPER,
@@ -35,6 +35,7 @@ export function spawnMigrationHelper(runtime, target) {
     `--home=${runtime.home}`,
     `--target=${target}`,
   ];
+  if (progressPid) args.push(`--progress-pid=${progressPid}`);
   const repoRoot = detectDevRepoRoot(runtime.profilesDir);
   if (repoRoot) {
     args.push(`--relaunch-cwd=${repoRoot}`);

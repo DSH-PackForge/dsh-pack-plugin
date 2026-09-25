@@ -9,6 +9,7 @@ import { ACTIVE_NAME } from './runtime.js';
 import { readState, writeState, resolveActiveName } from './profiles.js';
 import { spawnMigrationHelper } from './migrate.js';
 import { ensureManagerInProfile } from './ensure-manager.js';
+import { spawnProgressWindow, writeProgress, buildSteps, setStep, setPhase } from './progress.js';
 
 const JUNCTION_KIND = process.platform === 'win32' ? 'junction' : 'dir';
 const HOME_SKILLS = 'skills';
@@ -35,7 +36,7 @@ async function exists(p) {
  * 把激活指针 desktop 换到目标 profile。
  * @returns {Promise<{active:string, method:'junction', requiresRestart:true, previous:string}>}
  */
-export async function switchProfile(runtime, target, { swapSkills = true, allowDelegate = true } = {}) {
+export async function switchProfile(runtime, target, { swapSkills = true, allowDelegate = true, onProgress } = {}) {
   const { profilesDir, home } = runtime;
   const desktop = path.join(profilesDir, ACTIVE_NAME);
   const targetDir = path.join(profilesDir, target);
@@ -47,36 +48,50 @@ export async function switchProfile(runtime, target, { swapSkills = true, allowD
     throw new Error(`profile「${target}」不存在（${targetDir}）`);
   }
 
-  // 0) 迁装管理器：确保目标 profile 也带 @dsh-packforge/dsh-pack-plugin，否则切过去就切不回来。
-  //    必须在 rename/unlink 之前做（rename 前 desktop 还是来源本体，之后就读不到了）。
-  await ensureManagerInProfile(runtime, target);
-
   const previous = (await resolveActiveName(runtime)) ?? 'default';
 
   // 1) 每次切换都走脱管 helper：杀桌面 → 换指 → 自动重启（体验一致，不只首次迁移）。
+  //    先派进度窗口 + 落初始进度，再迁装管理器（带进度），最后派生 helper。
   //    helper 自身（allowDelegate=false）或非 win32 走下面的原地换指。
   if (allowDelegate && process.platform === 'win32') {
-    spawnMigrationHelper(runtime, target);
+    const st = await lstat(desktop);
+    const firstTime = !(st && st.isSymbolicLink()); // 还是真实目录 → 首次切换
+    const progressPid = spawnProgressWindow(home);
+    await writeProgress(home, { from: previous, to: target, firstTime, phase: 'running', steps: buildSteps(firstTime) });
+    try {
+      await setStep(home, 'install', 'running');
+      await ensureManagerInProfile(runtime, target);
+      await setStep(home, 'install', 'done');
+    } catch (err) {
+      await setPhase(home, 'failed', err?.message ?? String(err));
+      throw err;
+    }
+    spawnMigrationHelper(runtime, target, { progressPid });
     return { active: target, method: 'junction', requiresRestart: true, previous, restarting: true };
   }
 
-  // 2) 原地换指（非 win32 / helper 自身）：首次先把 desktop 存档为 default，再建指针。
+  // 2) 原地换指（非 win32 / helper 自身）：先迁装管理器，首次把 desktop 存档为 default，再建指针。
   //    helper 已在杀桌面后调用，rename 即便 EBUSY 也会被其轮询重试（LOCK_CODES 见 migrate-helper.js）。
+  await ensureManagerInProfile(runtime, target);
   let st = await lstat(desktop);
   if (st && !st.isSymbolicLink()) {
     const defaultDir = path.join(profilesDir, 'default');
     if (await exists(defaultDir)) {
       throw new Error('profiles/default 已存在，无法把 desktop 存档为 default');
     }
+    onProgress?.('move', 'running');
     await fsp.rename(desktop, defaultDir);
+    onProgress?.('move', 'done');
     st = null;
   }
 
   // 3) 删旧指针 → 建新指针（junction 用绝对目标）。
+  onProgress?.('link', 'running');
   if (st && st.isSymbolicLink()) {
     await fsp.unlink(desktop); // 红线：unlink，不是 rm -r
   }
   await fsp.symlink(targetDir, desktop, JUNCTION_KIND);
+  onProgress?.('link', 'done');
 
   // 3) home 级 skills 解包/回退（目标 profile 带 skills 才动，不轻易碰用户的 home 级 skills）。
   if (swapSkills) {

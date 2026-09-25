@@ -7,6 +7,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import { switchProfile } from './junction.js';
+import { setStep, setPhase } from './progress.js';
 
 // —— 参数解析（--key=value，值由 spawn 原样传入，无 shell 拆词）——
 const argv = {};
@@ -20,6 +21,7 @@ const home = argv['home'];
 const target = argv['target'];
 const relaunchCmd = argv['relaunch-cmd'] ?? '';
 const relaunchCwd = argv['relaunch-cwd'] ?? '';
+const progressPid = Number(argv['progress-pid']) || 0;
 
 const LOG = path.join(home, '.dsh-pack', 'migrate.log');
 async function log(msg) {
@@ -51,10 +53,11 @@ async function captureCommandLine(pid) {
 // 主进程后代——锁其实被启动器 tsx scripts/dev.ts（electron 主进程的父）握着，它要慢慢退出
 // 才释放锁。正确做法：从主进程沿父链上溯到启动器链顶端（node/electron/cmd），杀整条链的树，
 // 仍排除 helper 自身与运行本脚本的 powershell，并停在 bash（调用方的 shell）之前。
-function killScript(mainPid, selfPid) {
+function killScript(mainPid, selfPid, progressPid) {
   return `
 $main = ${mainPid}
 $self = ${selfPid}
+$progress = ${progressPid}
 $all = @(Get-CimInstance Win32_Process)
 $parent = @{}; $name = @{}
 foreach ($p in $all) { $parent[$p.ProcessId] = $p.ParentProcessId; $name[$p.ProcessId] = $p.Name }
@@ -77,7 +80,7 @@ while ($q.Count -gt 0) {
   }
 }
 foreach ($p in $desc) {
-  if ($p -eq $self -or $p -eq $PID) { continue }
+  if ($p -eq $self -or $p -eq $PID -or $p -eq $progress) { continue }
   Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
 }
 Stop-Process -Id $root -Force -ErrorAction SilentlyContinue
@@ -86,7 +89,7 @@ Stop-Process -Id $root -Force -ErrorAction SilentlyContinue
 
 async function killElectronTree(mainPid) {
   if (process.platform === 'win32' && mainPid) {
-    await run('powershell', ['-NoProfile', '-Command', killScript(mainPid, process.pid)]);
+    await run('powershell', ['-NoProfile', '-Command', killScript(mainPid, process.pid, progressPid)]);
     return;
   }
   if (mainPid) { try { process.kill(mainPid, 'SIGTERM'); } catch { /* 已退出 */ } }
@@ -99,7 +102,11 @@ async function waitForLockRelease() {
   let attempts = 0;
   for (;;) {
     try {
-      return await switchProfile(runtime, target, { swapSkills: true, allowDelegate: false });
+      return await switchProfile(runtime, target, {
+        swapSkills: true,
+        allowDelegate: false,
+        onProgress: (id, status) => { void setStep(home, id, status); },
+      });
     } catch (err) {
       attempts++;
       if (attempts === 1 || attempts % 10 === 0) {
@@ -151,18 +158,25 @@ async function relaunch() {
 }
 
 async function main() {
-  await log(`migrate start: target=${target} profiles=${profilesDir} electronPid=${electronPid} relaunchCmd=${relaunchCmd} relaunchCwd=${relaunchCwd}`);
+  await log(`migrate start: target=${target} profiles=${profilesDir} electronPid=${electronPid} progressPid=${progressPid} relaunchCmd=${relaunchCmd} relaunchCwd=${relaunchCwd}`);
   await sleep(2000); // 宽限：让宿主把「migrating」响应 flush 给 UI，再动手杀
+  await setStep(home, 'kill', 'running');
   await killElectronTree(electronPid);
+  await setStep(home, 'kill', 'done');
   await log('electron tree killed, waiting for lock release');
-  const r = await waitForLockRelease();
+  await sleep(300); // 让进度窗口看清「杀进程」完成
+  const r = await waitForLockRelease(); // 内部 onProgress 写 move/link
   await log(`switch done: active=${r.active} method=${r.method}`);
+  await setStep(home, 'launch', 'running');
   const ok = await relaunch();
+  await setStep(home, 'launch', 'done');
+  await setPhase(home, 'done');
   await log(`relaunch: ${ok ? 'spawned' : 'skipped'}`);
   process.exit(0);
 }
 
 main().catch(async (err) => {
+  await setPhase(home, 'failed', err?.message ?? String(err));
   await log(`migrate FAILED: ${err?.stack ?? err}`);
   process.exit(1);
 });
