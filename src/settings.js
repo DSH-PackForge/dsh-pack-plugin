@@ -5,9 +5,10 @@
 //
 // slots 契约（已从 DSH 源码确证）：
 //   ctx.slots.inject("settings.section", () => ctx.slots.register(options, Component))
-import { createElement as h, useState, useEffect } from 'react';
+import { createElement as h, useState, useEffect, Fragment } from 'react';
 
 const NS = 'dspack';
+const MANAGER_PKG = '@dsh-packforge/dsh-pack-plugin';
 
 const dict = {
   zh: {
@@ -51,6 +52,13 @@ const dict = {
     'market.empty': '市场暂无内容',
     'market.error': '市场加载失败',
     'market.none': '（无）',
+    'confirm.title': '切换 profile',
+    'confirm.from': '当前',
+    'confirm.to': '目标',
+    'confirm.firstTime': '首次切换：会把当前目录存档为 default',
+    'confirm.warning': '检测到目标 profile 没有 {pkg}，将自动安装。若没有此插件，将无法从应用内再次切换 profile。',
+    'confirm.cancel': '取消',
+    'confirm.ok': '确认切换',
   },
   en: {
     nav: 'Modpacks',
@@ -93,6 +101,13 @@ const dict = {
     'market.empty': 'Market is empty',
     'market.error': 'Market load failed',
     'market.none': '(none)',
+    'confirm.title': 'Switch profile',
+    'confirm.from': 'current',
+    'confirm.to': 'target',
+    'confirm.firstTime': 'First switch: current folder will be archived as default',
+    'confirm.warning': 'Target profile has no {pkg}; it will be installed automatically. Without it you cannot switch again from inside the app.',
+    'confirm.cancel': 'Cancel',
+    'confirm.ok': 'Confirm switch',
   },
 };
 
@@ -139,6 +154,7 @@ export function DspackSection({ t, packforge }) {
   const [market, setMarket] = useState(null); // null=未加载 undefined=加载中 {packs,error}
   const [meta, setMeta] = useState({});
   const [exportProfile, setExportProfile] = useState('');
+  const [confirm, setConfirm] = useState(null); // null | {from,to,hasManager,firstTime}
 
   const call = async (endpoint, payload) => {
     if (!rpc) return { ok: false, error: t('result.noRpc') };
@@ -167,7 +183,22 @@ export function DspackSection({ t, packforge }) {
   const showOk = (text) => setResult({ ok: true, text });
   const showErr = (error) => setResult({ ok: false, error });
 
-  const doSwitch = async (name) => {
+  // 点击「切换」先做只读预检，弹确认窗；用户点「确认切换」才真正调 profile/switch。
+  const askSwitch = async (name) => {
+    const r = await call('profile/switch-check', { name });
+    if (!r.ok) return showErr(r.error);
+    setConfirm({
+      from: r.value.from,
+      to: r.value.to,
+      hasManager: r.value.hasManager,
+      firstTime: r.value.firstTime,
+    });
+  };
+
+  const confirmSwitch = async () => {
+    if (!confirm) return;
+    const name = confirm.to;
+    setConfirm(null);
     setResult({ pending: true });
     const r = await call('profile/switch', { name });
     if (!r.ok) return showErr(r.error);
@@ -298,6 +329,41 @@ export function DspackSection({ t, packforge }) {
     hint: { margin: '4px 0 0', fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-label-tertiary)' },
     ok: { margin: 0, fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-success)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' },
     err: { margin: 0, fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-danger)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' },
+    // —— 切换确认弹窗 ——
+    overlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
+    modal: {
+      background: 'var(--dsw-alias-bg-layer-1)', borderRadius: 12, padding: '20px 22px',
+      minWidth: 360, maxWidth: 440, boxShadow: '0 12px 40px rgba(0,0,0,0.45)',
+      display: 'flex', flexDirection: 'column', gap: 14,
+    },
+    modalTitle: { margin: 0, fontSize: 15, fontWeight: 600, color: 'var(--dsw-alias-label-primary)', textAlign: 'center' },
+    ticket: {
+      position: 'relative', display: 'flex', alignItems: 'stretch',
+      border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 10, background: 'var(--dsw-alias-bg-layer-1)',
+    },
+    ticketSide: { flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4, padding: '16px 10px', minWidth: 0 },
+    ticketName: { fontSize: 18, fontWeight: 700, color: 'var(--dsw-alias-label-primary)', wordBreak: 'break-all', textAlign: 'center' },
+    ticketRole: { fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' },
+    ticketLine: { width: 0, borderLeft: '2px dashed var(--dsw-alias-border-l2)', alignSelf: 'stretch' },
+    ticketBadge: {
+      position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%,-50%)',
+      width: 28, height: 28, borderRadius: '50%',
+      background: 'var(--dsw-alias-bg-layer-1)', border: '2px dashed var(--dsw-alias-border-l2)',
+      color: 'var(--dsw-alias-label-secondary)', fontSize: 15, fontWeight: 700,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    },
+    warn: {
+      display: 'flex', gap: 8, alignItems: 'flex-start', padding: '8px 10px', borderRadius: 8,
+      border: '1px solid rgba(232,162,58,0.45)', background: 'rgba(232,162,58,0.10)',
+      fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-label-primary)', wordBreak: 'break-word',
+    },
+    warnIcon: { flex: '0 0 auto', lineHeight: '18px', color: '#e8a23a', fontWeight: 700 },
+    confirmBtns: { display: 'flex', justifyContent: 'flex-end', gap: 8 },
+    btnPrimary: {
+      height: 30, padding: '0 14px', borderRadius: 15, border: '1px solid #4b7bec', cursor: 'pointer',
+      fontSize: 13, lineHeight: '18px', background: '#4b7bec', color: '#fff', fontWeight: 600, font: 'inherit',
+      width: 'fit-content', flex: '0 0 auto',
+    },
   };
 
   const fieldInput = (key) =>
@@ -314,7 +380,7 @@ export function DspackSection({ t, packforge }) {
       h('li', { key: p.name, style: style.listItem },
         h('span', { style: style.listName }, p.name + (p.active ? `（${t('profile.active')}）` : '')),
         h('div', { style: style.row },
-          p.active ? null : h('button', { type: 'button', style: style.btnSmall, onClick: () => doSwitch(p.name) }, t('action.switch')),
+          p.active ? null : h('button', { type: 'button', style: style.btnSmall, onClick: () => askSwitch(p.name) }, t('action.switch')),
           h('button', { type: 'button', style: style.btnSmall, onClick: () => doExportProfile(p.name) }, t('action.export')),
           h('button', { type: 'button', style: style.btnSmall, onClick: () => doDelete(p.name) }, t('action.delete')),
         ),
@@ -401,7 +467,39 @@ export function DspackSection({ t, packforge }) {
 
   const content = tab === 'manage' ? renderManage() : tab === 'export' ? renderExport() : renderMarket();
 
-  return h('div', { style: style.section },
+  const renderConfirm = () => {
+    if (!confirm) return null;
+    const warning = t('confirm.warning').replace('{pkg}', MANAGER_PKG);
+    return h('div', { style: style.overlay, onClick: () => setConfirm(null) },
+      h('div', { style: style.modal, onClick: (e) => e.stopPropagation() },
+        h('h3', { style: style.modalTitle }, t('confirm.title')),
+        h('div', { style: style.ticket },
+          h('div', { style: style.ticketSide },
+            h('span', { style: style.ticketName }, confirm.from),
+            h('span', { style: style.ticketRole }, t('confirm.from')),
+          ),
+          h('div', { style: style.ticketLine }),
+          h('div', { style: style.ticketBadge }, '→'),
+          h('div', { style: style.ticketSide },
+            h('span', { style: style.ticketName }, confirm.to),
+            h('span', { style: style.ticketRole }, t('confirm.to')),
+          ),
+        ),
+        confirm.firstTime ? h('p', { style: style.hint }, t('confirm.firstTime')) : null,
+        confirm.hasManager ? null : h('div', { style: style.warn },
+          h('span', { style: style.warnIcon }, '!'),
+          h('span', null, warning),
+        ),
+        h('div', { style: style.confirmBtns },
+          h('button', { type: 'button', style: style.btn, onClick: () => setConfirm(null) }, t('confirm.cancel')),
+          h('button', { type: 'button', style: style.btnPrimary, onClick: confirmSwitch }, t('confirm.ok')),
+        ),
+      ),
+    );
+  };
+
+  return h(Fragment, null,
+    h('div', { style: style.section },
     h('div', { style: style.tabs },
       ['manage', 'export', 'market'].map((id) => h('button', {
         key: id, type: 'button',
@@ -415,5 +513,7 @@ export function DspackSection({ t, packforge }) {
       ? h('p', { style: result.ok === false ? style.err : style.ok },
           result.pending ? t('result.pending') : (result.text ?? result.error))
       : null,
+    ),
+    renderConfirm(),
   );
 }

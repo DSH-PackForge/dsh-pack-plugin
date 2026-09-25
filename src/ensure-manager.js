@@ -89,3 +89,18 @@ export async function ensureManagerInProfile(runtime, target) {
 
   return { installed: true, spec };
 }
+
+/**
+ * 只读检测目标 profile 是否已装管理器（确认弹窗的预检用，不安装）。
+ * @returns {Promise<boolean>}
+ */
+export async function checkManagerInProfile(runtime, target) {
+  const targetDir = path.join(runtime.profilesDir, target);
+  try {
+    const manifest = await readManifest(targetDir);
+    return hasManagerBundle(manifest)
+      && await exists(path.join(managerDir(targetDir), 'package.json'));
+  } catch {
+    return false;
+  }
+}

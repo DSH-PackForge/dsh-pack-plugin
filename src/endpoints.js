@@ -11,10 +11,14 @@ import {
   readMarketIndex,
   DEFAULT_MARKET_INDEX,
 } from './core/index.js';
+import path from 'node:path';
+import fsp from 'node:fs/promises';
 import { getHost } from './host.js';
-import { listProfiles, createProfile, deleteProfile, readState, writeState } from './profiles.js';
+import { listProfiles, createProfile, deleteProfile, readState, writeState, resolveActiveName } from './profiles.js';
 import { switchProfile } from './junction.js';
 import { CHANNEL } from './channel.js';
+import { ACTIVE_NAME } from './runtime.js';
+import { checkManagerInProfile } from './ensure-manager.js';
 
 const need = (v, msg) => {
   if (v == null || v === '') throw new Error(msg);
@@ -59,6 +63,23 @@ export const ENDPOINTS = {
   'profile/switch': async ({ runtime, payload }) => {
     const name = need(payload?.name, '缺少 profile 名');
     return await switchProfile(runtime, name, { swapSkills: payload?.swapSkills !== false });
+  },
+
+  // 切换前的只读预检：确认弹窗要显示的 from/to、目标是否已装管理器、是否首次切换。
+  // 不安装、不改状态 —— 真正的安装/换指由 profile/switch 在用户确认后执行。
+  'profile/switch-check': async ({ runtime, payload }) => {
+    const name = need(payload?.name, '缺少 profile 名');
+    const profiles = await listProfiles(runtime);
+    if (!profiles.some((p) => p.name === name)) throw new Error(`profile「${name}」不存在`);
+    const hasManager = await checkManagerInProfile(runtime, name);
+    const activeName = await resolveActiveName(runtime);
+    const desktop = path.join(runtime.profilesDir, ACTIVE_NAME);
+    let firstTime = true;
+    try {
+      const st = await fsp.lstat(desktop);
+      firstTime = !st.isSymbolicLink(); // 还是真实目录 → 首次切换（要移动默认目录）
+    } catch { /* desktop 不存在 → 视为首次 */ }
+    return { from: activeName ?? 'default', to: name, hasManager, firstTime };
   },
 
   'profile/open-dir': async ({ runtime, payload }) => {
