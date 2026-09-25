@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import React, { Fragment } from 'react';
 import { registerSettingsSection, DspackSection } from '../src/settings.js';
 
 /** mock DSH client slots 服务。 */
@@ -62,9 +63,33 @@ test('registerSettingsSection：无 ctx.effect 时仍能注册', () => {
   assert.equal(typeof slots.injected['settings.section'], 'function');
 });
 
-test('DspackSection 是 React 组件函数（createElement 返回元素树）', () => {
-  const el = DspackSection({ t: (k) => k, packforge: { api: { shell: () => {} } } });
+/** 最小 hooks 派发器：直接渲染函数组件（不引入 react-dom / test-renderer）。
+ *  组件只用 useState / useEffect；useEffect 置空以跳过异步 RPC 副作用。 */
+function renderFunctionComponent(Component, props) {
+  const dispatcher = React.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED?.ReactCurrentDispatcher;
+  const prev = dispatcher?.current;
+  const states = [];
+  let idx = 0;
+  dispatcher.current = {
+    useState(init) {
+      const i = idx++;
+      if (states[i] === undefined) states[i] = typeof init === 'function' ? init() : init;
+      return [states[i], (v) => { states[i] = v; }];
+    },
+    useEffect() {},
+  };
+  try {
+    return Component(props);
+  } finally {
+    dispatcher.current = prev;
+  }
+}
+
+test('DspackSection 是 React 组件函数（可渲染出元素树）', () => {
+  const el = renderFunctionComponent(DspackSection, { t: (k) => k, packforge: { api: { shell: () => {} } } });
   assert.ok(el);
-  assert.equal(typeof el.type, 'string'); // 'div'
-  assert.equal(el.props.children.filter(Boolean).length > 0, true);
+  assert.equal(el.type, Fragment); // 顶层是 Fragment
+  const children = el.props.children.filter(Boolean);
+  assert.equal(children.length, 1);
+  assert.equal(children[0].type, 'div'); // 主面板 section div
 });
