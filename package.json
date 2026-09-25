@@ -47,7 +47,7 @@
   "scripts": {
     "test": "node --test --experimental-test-isolation=none \"test/*.test.js\"",
     "bundle": "node scripts/bundle-client.mjs",
-    "prepublishOnly": "npm run bundle && npm test"
+    "prepack": "npm run bundle && npm test"
   },
   "dependencies": {
     "fflate": "^0.8.2"
