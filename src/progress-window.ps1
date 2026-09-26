@@ -34,7 +34,7 @@ $window.ResizeMode = [System.Windows.ResizeMode]::NoResize
 $window.Topmost = $true
 $window.ShowInTaskbar = $false
 $window.Width = 380
-$window.Height = 240
+$window.Height = 272
 $window.Background = New-Brush '#1e1f24'
 $window.WindowStartupLocation = [System.Windows.WindowStartupLocation]::Manual
 $wa = [System.Windows.SystemParameters]::WorkArea
@@ -61,6 +61,13 @@ $stepsPanel = New-Object System.Windows.Controls.StackPanel
 $stepsPanel.Margin = New-Object System.Windows.Thickness(0, 12, 0, 0)
 $root.AddChild($stepsPanel) | Out-Null
 
+$hint = New-Object System.Windows.Controls.TextBlock
+$hint.FontSize = 11
+$hint.Foreground = New-Brush '#8b8c95'
+$hint.TextWrapping = [System.Windows.TextWrapping]::Wrap
+$hint.Margin = New-Object System.Windows.Thickness(0, 12, 0, 0)
+$root.AddChild($hint) | Out-Null
+
 $window.Content = $root
 
 $statusGlyph = @{
@@ -82,6 +89,7 @@ $timer.Add_Tick({
     $p = Read-Progress
     if ($null -eq $p) { return }
     $subtitle.Text = "$($p.from) -> $($p.to)"
+    if ($null -ne $p.hint) { $hint.Text = [string]$p.hint } else { $hint.Text = '' }
     $stepsPanel.Children.Clear()
     foreach ($s in @($p.steps)) {
         $line = New-Object System.Windows.Controls.TextBlock

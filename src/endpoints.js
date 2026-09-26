@@ -14,7 +14,9 @@ import {
   DEFAULT_MARKET_INDEX,
 } from './core/index.js';
 import path from 'node:path';
+import os from 'node:os';
 import fsp from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { getHost } from './host.js';
 import { listProfiles, createProfile, deleteProfile, readState, writeState, resolveActiveName } from './profiles.js';
 import { switchProfile } from './junction.js';
@@ -27,6 +29,25 @@ const need = (v, msg) => {
   if (v == null || v === '') throw new Error(msg);
   return String(v).trim();
 };
+
+// 插件自身元数据：作者/仓库/首页/版本号等，供 About 页与检查更新使用。
+const require = createRequire(import.meta.url);
+const MANAGER = '@dsh-packforge/dsh-pack-plugin';
+const PACKAGE_VERSION = require('../package.json').version;
+const NPM_REGISTRY = 'https://registry.npmjs.org';
+const NPM_URL = `https://www.npmjs.com/package/${MANAGER}`;
+
+// 简版 semver 比较（去 prerelease 后缀，逐段比数值）：>0 表示 a 更新。
+function cmpVersion(a, b) {
+  const nums = (v) => String(v).split('-')[0].split('.').map((n) => parseInt(n, 10) || 0);
+  const A = nums(a);
+  const B = nums(b);
+  for (let i = 0; i < Math.max(A.length, B.length); i += 1) {
+    const d = (A[i] || 0) - (B[i] || 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
 
 // 导出/工作区配置共用的目标解析：默认当前激活 profile；名字优先在桌面 home（与切换列表同一套）里匹配，
 // 匹配不到再当路径/全局名兜底（CLI / AI 工具导出任意目录用）。
@@ -262,6 +283,41 @@ export const ENDPOINTS = {
   },
 
   'task/list': async () => ({ tasks: tasks.list() }),
+
+  // About 页「检查更新」：拉 registry 最新版本并与本地比较（网络 I/O 走 host，与 ensure-manager 同款）。
+  'plugin/check-update': async () => {
+    const host = getHost();
+    const esc = MANAGER.replace('/', '%2F');
+    const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'dspack-update-'));
+    try {
+      const metaPath = path.join(tmp, 'meta.json');
+      await host.download(`${NPM_REGISTRY}/${esc}/latest`, metaPath);
+      const text = await host.readTextFile(metaPath);
+      if (!text) throw new Error(`无法读取 ${MANAGER} 的 NPM 元数据`);
+      const latest = JSON.parse(text)?.version;
+      if (!latest) throw new Error(`${MANAGER} 尚未发布到 NPM`);
+      return {
+        current: PACKAGE_VERSION,
+        latest,
+        outdated: cmpVersion(latest, PACKAGE_VERSION) > 0,
+        npmUrl: NPM_URL,
+      };
+    } finally {
+      await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
+    }
+  },
+
+  // About 页链接（作者/仓库/求 Star）：用系统默认浏览器打开 http/https 链接。
+  'plugin/open-url': async ({ payload }) => {
+    const url = need(payload?.url, '缺少 URL');
+    if (!/^https?:\/\//i.test(url)) throw new Error('仅支持 http/https 链接');
+    const host = getHost();
+    const cmd = process.platform === 'win32' ? 'explorer'
+      : process.platform === 'darwin' ? 'open' : 'xdg-open';
+    const r = await host.exec(cmd, [url]);
+    if (r.error) throw new Error(`打开链接失败：${r.error}`);
+    return { opened: true };
+  },
 
   'task/get': async ({ payload }) => tasks.get(payload?.id),
 };

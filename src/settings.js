@@ -15,6 +15,12 @@ const VERSION = typeof __PACKAGE_VERSION__ === 'undefined' ? '0.1.0' : __PACKAGE
 // logo（icons/folder-zip-line.svg 的 path），About 页用 currentColor 上色。
 const LOGO_PATH = 'M444.330667 128l85.333333 85.333333H896a42.666667 42.666667 0 0 1 42.666667 42.666667v597.333333a42.666667 42.666667 0 0 1-42.666667 42.666667H128a42.666667 42.666667 0 0 1-42.666667-42.666667V170.666667a42.666667 42.666667 0 0 1 42.666667-42.666667h316.330667zM768 768h-170.666667v-128h85.333334v-85.333333h-85.333334v-85.333334h85.333334V384h-85.333334V298.666667h-102.997333l-85.333333-85.333334H170.666667v597.333334h682.666666V298.666667h-170.666666v85.333333h85.333333v85.333333h-85.333333v85.333334h85.333333v213.333333z';
 
+// About 页外部链接（作者 / 仓库 / 求 Star），点击经 plugin/open-url 用系统浏览器打开。
+const AUTHOR = 'hxh230802';
+const AUTHOR_URL = 'https://github.com/hxh230802';
+const REPO_URL = 'https://github.com/DSH-PackForge/dsh-pack-plugin';
+const NPM_URL = 'https://www.npmjs.com/package/@dsh-packforge/dsh-pack-plugin';
+
 const dict = {
   zh: {
     nav: '整合包',
@@ -98,6 +104,16 @@ const dict = {
     'tab.about': '关于',
     'about.version': '版本',
     'about.desc': 'DSH 整合包管理插件：.dspack 导出/导入、多 profile 切换，零官方源码改动。',
+    'about.philosophy': '整合——包罗万象',
+    'about.author': '作者',
+    'about.repo': '仓库',
+    'about.star': '求 Star',
+    'about.checkUpdate': '检查更新',
+    'about.checking': '检查中…',
+    'about.upToDate': '已是最新版本',
+    'about.newVersion': '有新版本 {latest}（当前 {current}）',
+    'about.checkFailed': '检查更新失败',
+    'about.viewNpm': '在 npm 查看',
   },
   en: {
     nav: 'Modpacks',
@@ -164,6 +180,16 @@ const dict = {
     'tab.about': 'About',
     'about.version': 'Version',
     'about.desc': 'DSH modpack plugin: .dspack export/import, multi-profile switching, zero official source changes.',
+    'about.philosophy': 'Integrate — embrace everything',
+    'about.author': 'Author',
+    'about.repo': 'Repository',
+    'about.star': 'Star on GitHub',
+    'about.checkUpdate': 'Check for updates',
+    'about.checking': 'Checking…',
+    'about.upToDate': 'You are up to date',
+    'about.newVersion': 'New version {latest} (current {current})',
+    'about.checkFailed': 'Update check failed',
+    'about.viewNpm': 'View on npm',
   },
 };
 
@@ -224,6 +250,7 @@ export function DspackSection({ t, packforge }) {
   const [managerSource, setManagerSource] = useState('copy'); // 'copy' | 'npm'（目标缺管理器时的安装方式）
   const [tasksOpen, setTasksOpen] = useState(false); // 任务中心面板是否展开（内嵌视图，替代旧版独立小窗）
   const [taskList, setTaskList] = useState([]); // task/list 轮询结果
+  const [update, setUpdate] = useState(null); // null | {checking:true} | {current,latest,outdated,npmUrl} | {error}
 
   const call = async (endpoint, payload) => {
     if (!rpc) return { ok: false, error: t('result.noRpc') };
@@ -265,6 +292,19 @@ export function DspackSection({ t, packforge }) {
 
   const showOk = (text) => setResult({ ok: true, text });
   const showErr = (error) => setResult({ ok: false, error });
+
+  // About 页：用系统浏览器打开外部链接（经 host，避免 renderer 里 target=_blank 不可控）。
+  const openUrl = (url) => {
+    void call('plugin/open-url', { url });
+  };
+
+  // About 页：检查更新（host 拉 registry 最新版并与本地比较）。
+  const doCheckUpdate = async () => {
+    setUpdate({ checking: true });
+    const r = await call('plugin/check-update', {});
+    if (!r.ok) setUpdate({ error: r.error });
+    else setUpdate(r.value);
+  };
 
   // 点击「切换」先做只读预检，弹确认窗；用户点「确认切换」才真正调 profile/switch。
   const askSwitch = async (name) => {
@@ -709,13 +749,36 @@ export function DspackSection({ t, packforge }) {
       ),
     );
 
-  const renderAbout = () =>
-    h('div', { style: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '24px 0' } },
+  const renderAbout = () => {
+    const updateLine = !update ? null : update.checking
+      ? h('p', { style: { ...style.line, margin: 0 } }, t('about.checking'))
+      : update.error
+        ? h('p', { style: { ...style.err, margin: 0 } }, `${t('about.checkFailed')}：${update.error}`)
+        : update.outdated
+          ? h('div', { style: { ...style.row, justifyContent: 'center' } },
+              h('p', { style: { margin: 0, fontSize: 12, lineHeight: '18px', color: '#e8a23a', fontWeight: 600 } },
+                t('about.newVersion').replace('{latest}', update.latest).replace('{current}', update.current)),
+              h('button', { type: 'button', style: style.btnSmall, onClick: () => openUrl(update.npmUrl || NPM_URL) }, t('about.viewNpm')),
+            )
+          : h('p', { style: { ...style.line, margin: 0 } }, `${t('about.upToDate')}（${update.latest}）`);
+
+    return h('div', { style: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12, padding: '24px 0' } },
       renderLogo(),
       h('div', { style: { fontSize: 16, fontWeight: 700, lineHeight: '24px', color: 'var(--dsw-alias-label-primary)' } }, MANAGER_PKG),
       h('p', { style: { ...style.line, margin: 0 } }, `${t('about.version')} ${VERSION}`),
       h('p', { style: { ...style.line, margin: 0, maxWidth: 440, textAlign: 'center' } }, t('about.desc')),
+      h('p', { style: { ...style.line, margin: 0, maxWidth: 440, textAlign: 'center', fontStyle: 'italic', color: 'var(--dsw-alias-label-primary)' } }, t('about.philosophy')),
+      h('div', { style: { ...style.row, justifyContent: 'center' } },
+        h('button', { type: 'button', style: style.btn, onClick: () => doCheckUpdate() }, t('about.checkUpdate')),
+      ),
+      updateLine,
+      h('div', { style: { ...style.row, justifyContent: 'center' } },
+        h('button', { type: 'button', style: style.btnSmall, onClick: () => openUrl(AUTHOR_URL) }, `${t('about.author')} ${AUTHOR}`),
+        h('button', { type: 'button', style: style.btnSmall, onClick: () => openUrl(REPO_URL) }, t('about.repo')),
+        h('button', { type: 'button', style: style.btnSmall, onClick: () => openUrl(REPO_URL) }, `⭐ ${t('about.star')}`),
+      ),
     );
+  };
 
   const content = tab === 'manage' ? renderManage() : tab === 'export' ? renderExport() : tab === 'market' ? renderMarket() : renderAbout();
 

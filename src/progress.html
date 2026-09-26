@@ -45,18 +45,21 @@
   .step.done .mark { color: #2ea44f; }
   .step.failed .mark { color: #d3383a; }
   .error { margin-top: 10px; font-size: 12px; line-height: 18px; color: #ff8b8c; word-break: break-all; }
+  .hint { margin-top: 14px; padding-top: 12px; border-top: 1px solid #2c2d33; font-size: 12px; line-height: 18px; color: #8b8c95; text-align: center; }
 </style>
 </head>
 <body>
   <div class="title">切换中</div>
   <div class="current" id="current"></div>
   <div class="timeline" id="timeline"></div>
+  <div class="hint" id="hint"></div>
 <script>
 const fs = require('node:fs');
 const q = new URLSearchParams(location.search);
 const file = q.get('file');
 const currentEl = document.getElementById('current');
 const timelineEl = document.getElementById('timeline');
+const hintEl = document.getElementById('hint');
 const DOT_MARK = { done: '✓', running: '', pending: '○', failed: '✗' };
 const TAIL = { done: '完成', running: '进行中', failed: '失败', pending: '待办' };
 let lastRaw = null;
@@ -97,6 +100,7 @@ function render(data) {
     err.textContent = String(data.error);
     timelineEl.appendChild(err);
   }
+  hintEl.textContent = data.hint ? String(data.hint) : '';
 }
 
 function escapeHtml(s) {

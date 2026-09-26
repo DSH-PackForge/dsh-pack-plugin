@@ -20,6 +20,9 @@ const LABELS = {
   launch: '正在拉起客户端',
 };
 
+/** 进度窗底部固定提示（写进 progress.json，HTML 与 WPF 两个渲染器共用；PS1 因此保持纯 ASCII）。 */
+export const HINT = '如长时间未自动重启，请手动拉起客户端。';
+
 export function progressPath(home) {
   return path.join(home, '.dsh-pack', FILE);
 }

@@ -9,7 +9,7 @@ import { ACTIVE_NAME } from './runtime.js';
 import { readState, writeState, resolveActiveName } from './profiles.js';
 import { spawnMigrationHelper } from './migrate.js';
 import { ensureManagerInProfile } from './ensure-manager.js';
-import { spawnProgressWindow, writeProgress, buildSteps, setStep, setPhase } from './progress.js';
+import { spawnProgressWindow, writeProgress, buildSteps, setStep, setPhase, HINT } from './progress.js';
 import { HOME_ARTIFACT_STORE } from './core/home-store.js';
 
 const JUNCTION_KIND = process.platform === 'win32' ? 'junction' : 'dir';
@@ -57,7 +57,7 @@ export async function switchProfile(runtime, target, { swapSkills = true, allowD
     const st = await lstat(desktop);
     const firstTime = !(st && st.isSymbolicLink()); // 还是真实目录 → 首次切换
     const progressPid = spawnProgressWindow(home);
-    await writeProgress(home, { from: previous, to: target, firstTime, phase: 'running', steps: buildSteps(firstTime) });
+    await writeProgress(home, { from: previous, to: target, firstTime, phase: 'running', steps: buildSteps(firstTime), hint: HINT });
     try {
       await setStep(home, 'install', 'running');
       await ensureManagerInProfile(runtime, target, { source: managerSource });

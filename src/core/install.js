@@ -28,11 +28,14 @@ export async function installPack(host, opts = {}) {
   const progress = (stage, detail) => {
     if (typeof opts.onProgress === 'function') opts.onProgress(stage, detail);
   };
+  // 行式日志回调（任务中心 logSink）：落盘细节逐文件 print。
+  const log = makeLog(opts.onOutput);
 
   const profilesRoot = opts.profilesRoot || host.joinPath(host.homedir(), '.dsh', 'profiles');
 
   progress('download', typeof source === 'string' && /^https?:\/\//i.test(source) ? '下载整合包' : '读取整合包');
   const { path: packPath, tempDir } = await resolvePackSource(host, source);
+  log(`整合包：${source} → ${packPath}`);
 
   try {
     await verifyIntegrity(host, packPath, opts);
@@ -47,6 +50,7 @@ export async function installPack(host, opts = {}) {
     const errors = validateManifest(manifest);
     if (errors.length) throw new Error(`整合包不合法：${errors.join('；')}`);
 
+    log(`manifest v${manifest.manifestVersion} type=${manifest.type ?? 'profile'} name=${manifest.name}`);
     if (manifest.manifestVersion === 5 && manifest.type === 'dshhome') {
       return await installDshHome(host, manifest, entries, opts, progress);
     }
@@ -61,6 +65,7 @@ async function installProfile(host, manifest, entries, opts, progress, profilesR
   const profileName = sanitizeSlug(opts.name || manifest.profileName || manifest.name);
   if (!profileName) throw new Error('无法确定 Profile 名称');
   const target = host.joinPath(profilesRoot, profileName);
+  const log = makeLog(opts.onOutput);
 
   // dry-run 只读预览：即便目标已存在也照常返回计划（真实安装才要求 --force）。
   if (opts.dryRun) {
@@ -72,15 +77,17 @@ async function installProfile(host, manifest, entries, opts, progress, profilesR
     throw new Error(`Profile「${profileName}」已存在：${target}（使用 --force 覆盖）`);
   }
   if ((await host.stat(target)) != null) {
+    log(`覆盖已存在的 profile：${target}`);
     await host.rm(target, { recursive: true, force: true });
   }
   await host.mkdir(target);
+  log(`创建 profile 目录：${target}`);
 
   try {
     progress('extract', '写入 overrides/ 与 package.json');
-    await materializePackage(host, target, manifest, entries);
+    await materializePackage(host, target, manifest, entries, log);
     // home/ → $DSH_HOME 根（上一级目录内容：全局 skill / 预设），与 overrides/（profile 根）并列。
-    await materializeHome(host, host.joinPath(profilesRoot, '..'), entries, profileName);
+    await materializeHome(host, host.joinPath(profilesRoot, '..'), entries, profileName, log);
 
     let installed = false;
     let reconcile = null;
@@ -99,7 +106,7 @@ async function installProfile(host, manifest, entries, opts, progress, profilesR
 
     const files = manifest.files ?? [];
     if (files.length) progress('files', `下载 ${files.length} 个 files[] 条目`);
-    const filesDownloaded = await downloadFiles(host, target, files);
+    const filesDownloaded = await downloadFiles(host, target, files, log);
 
     progress('done', profileName);
     return { profileName, dir: target, manifest, dryRun: false, installed, reconcile, filesDownloaded };
@@ -111,10 +118,14 @@ async function installProfile(host, manifest, entries, opts, progress, profilesR
 
 /** dshhome（v5）安装：整个 DSH_HOME 快照，顺序「先装 DSH → 建 home → 逐 profile → home 级资源 → 指针下载」。 */
 async function installDshHome(host, manifest, entries, opts, progress) {
+  const log = makeLog(opts.onOutput);
+
   // ① 先确保 dshVersion 的 DSH 已安装：多个 profile 的 bundle 都靠安装基线解析。
   await ensureDsh(host, manifest, opts);
+  if (manifest.dshVersion) log(`DSH 基线 ${manifest.dshVersion} 已就绪`);
 
   const homeRoot = opts.home ? host.resolvePath(opts.home) : host.joinPath(host.homedir(), '.dsh');
+  log(`目标 DSH_HOME：${homeRoot}`);
 
   if (opts.dryRun) {
     const exists = (await host.stat(homeRoot)) != null;
@@ -128,6 +139,7 @@ async function installDshHome(host, manifest, entries, opts, progress) {
     throw new Error(`目标 DSH_HOME 已存在：${homeRoot}（使用 --force 覆盖）`);
   }
   if ((await host.stat(homeRoot)) != null) {
+    log(`覆盖已存在的 DSH_HOME：${homeRoot}`);
     await host.rm(homeRoot, { recursive: true, force: true });
   }
   await host.mkdir(homeRoot);
@@ -138,7 +150,7 @@ async function installDshHome(host, manifest, entries, opts, progress) {
     for (const [name, unit] of Object.entries(manifest.profiles)) {
       const profileDir = host.joinPath(homeRoot, 'profiles', name);
       progress('extract', `写入 profile「${name}」`);
-      await materializeProfile(host, profileDir, name, unit, entries);
+      await materializeProfile(host, profileDir, name, unit, entries, log);
 
       if (!opts.noInstall) {
         progress('install', `运行 pnpm install（${name}，可能较慢）`);
@@ -156,7 +168,7 @@ async function installDshHome(host, manifest, entries, opts, progress) {
 
     // ③ home 级 overrides：.agent-presets/ skills/ AGENTS.md data/ 等
     progress('extract', '写入 home 级资源（preset / skill / 指令 / 数据）');
-    await materializeHomeOverrides(host, homeRoot, entries);
+    await materializeHomeOverrides(host, homeRoot, entries, log);
 
     // ④ files[] + 重 skills[] 指针下载
     const heavySkills = (manifest.skills ?? [])
@@ -164,7 +176,7 @@ async function installDshHome(host, manifest, entries, opts, progress) {
       .map((s) => ({ path: s.path, sha256: s.sha256, size: s.size, urls: s.urls }));
     const all = [...(manifest.files ?? []), ...heavySkills];
     if (all.length) progress('files', `下载 ${all.length} 个 files[]/skills[] 条目`);
-    const filesDownloaded = await downloadFiles(host, homeRoot, all);
+    const filesDownloaded = await downloadFiles(host, homeRoot, all, log);
 
     progress('done', manifest.name);
     return {
@@ -222,13 +234,15 @@ export async function verifyIntegrity(host, packPath, opts = {}) {
 }
 
 /** 单 profile：overrides/* 落盘 + 重建 package.json + 快照机器文件。 */
-async function materializePackage(host, dir, manifest, entries) {
+async function materializePackage(host, dir, manifest, entries, log) {
   // 1) overrides/* → profile 根
   for (const [entryPath, data] of Object.entries(entries)) {
     if (!entryPath.startsWith('overrides/')) continue;
     const rel = safeRel(entryPath.slice('overrides/'.length));
     if (!rel) continue;
-    await host.writeFile(host.joinPath(dir, rel), data);
+    const dest = host.joinPath(dir, rel);
+    await host.writeFile(dest, data);
+    log(`写入 overrides/${rel} → ${dest}`);
   }
 
   // 2) package.json：以 manifest 为唯一事实源重建 dependencies / bundles；保留快照其余字段
@@ -236,33 +250,43 @@ async function materializePackage(host, dir, manifest, entries) {
   const pkg = base && typeof base === 'object' && !Array.isArray(base) ? base : {};
   pkg.dependencies = coordsToPkgDeps(manifest.dependencies ?? {});
   pkg.dsh = { ...(pkg.dsh ?? {}), profile: { ...(pkg.dsh?.profile ?? {}), bundles: manifest.bundles ?? [] } };
-  await host.writeTextFile(host.joinPath(dir, 'package.json'), JSON.stringify(pkg, null, 2) + '\n');
+  const pkgPath = host.joinPath(dir, 'package.json');
+  await host.writeTextFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+  log(`重建 package.json → ${pkgPath}`);
 
   // 3) pnpm 设置 / 锁文件快照（根机器文件，可选）
   for (const name of ['pnpm-workspace.yaml', 'pnpm-lock.yaml']) {
-    if (entries[name]) await host.writeFile(host.joinPath(dir, name), entries[name]);
+    if (entries[name]) {
+      const dest = host.joinPath(dir, name);
+      await host.writeFile(dest, entries[name]);
+      log(`写入 ${name} → ${dest}`);
+    }
   }
 
   // 4) cordis.patch.yml：overrides 已优先落地；缺则回退 manifest.patch
   const patchPath = host.joinPath(dir, 'cordis.patch.yml');
   if ((await host.stat(patchPath)) == null && typeof manifest.patch === 'string') {
     await host.writeTextFile(patchPath, manifest.patch);
+    log(`回退 manifest.patch → ${patchPath}`);
   }
 }
 
 /** 单 profile 包携带的 home 级内容：home/* → $DSH_HOME 根；skills / .agent-presets 落到 .dsh-pack/<store>/<profileName>/（换指 slot）。 */
-async function materializeHome(host, homeRoot, entries, profileName) {
+async function materializeHome(host, homeRoot, entries, profileName, log) {
   for (const [entryPath, data] of Object.entries(entries)) {
     if (!entryPath.startsWith('home/')) continue;
     const rel = safeRel(entryPath.slice('home/'.length));
     if (!rel) continue;
-    await host.writeFile(host.joinPath(homeRoot, storeHomeRel(rel, profileName)), data);
+    const dest = host.joinPath(homeRoot, storeHomeRel(rel, profileName));
+    await host.writeFile(dest, data);
+    log(`写入 home/${rel} → ${dest}`);
   }
 }
 
 /** dshhome 单个 profile：overrides/profiles/<name>/ 落盘 + 以 ProfileUnit 重建 package.json / patch。 */
-async function materializeProfile(host, profileDir, name, unit, entries) {
+async function materializeProfile(host, profileDir, name, unit, entries, log) {
   await host.mkdir(profileDir);
+  log(`创建 profile 目录：${profileDir}`);
 
   // 1) overrides/profiles/<name>/* → profile 根
   const prefix = `overrides/profiles/${name}/`;
@@ -270,7 +294,9 @@ async function materializeProfile(host, profileDir, name, unit, entries) {
     if (!entryPath.startsWith(prefix)) continue;
     const rel = safeRel(entryPath.slice(prefix.length));
     if (!rel) continue;
-    await host.writeFile(host.joinPath(profileDir, rel), data);
+    const dest = host.joinPath(profileDir, rel);
+    await host.writeFile(dest, data);
+    log(`写入 ${prefix}${rel} → ${dest}`);
   }
 
   // 2) package.json：以 ProfileUnit 为唯一事实源（bundle 层栈 + 坐标→依赖）
@@ -280,23 +306,28 @@ async function materializeProfile(host, profileDir, name, unit, entries) {
     dependencies: coordsToPkgDeps(unit.dependencies ?? {}),
     dsh: { profile: { bundles: unit.bundles ?? [] } },
   };
-  await host.writeTextFile(host.joinPath(profileDir, 'package.json'), JSON.stringify(pkg, null, 2) + '\n');
+  const pkgPath = host.joinPath(profileDir, 'package.json');
+  await host.writeTextFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+  log(`重建 package.json → ${pkgPath}`);
 
   // 3) cordis.patch.yml：overrides 优先；缺则回退 unit.patch
   const patchPath = host.joinPath(profileDir, 'cordis.patch.yml');
   if ((await host.stat(patchPath)) == null && typeof unit.patch === 'string') {
     await host.writeTextFile(patchPath, unit.patch);
+    log(`回退 unit.patch → ${patchPath}`);
   }
 }
 
 /** dshhome：home 级 overrides（.agent-presets/ skills/ AGENTS.md data/ 等，profiles/ 除外）落盘。 */
-async function materializeHomeOverrides(host, homeRoot, entries) {
+async function materializeHomeOverrides(host, homeRoot, entries, log) {
   for (const [entryPath, data] of Object.entries(entries)) {
     if (!entryPath.startsWith('overrides/')) continue;
     const rel = safeRel(entryPath.slice('overrides/'.length));
     if (!rel) continue;
     if (rel.startsWith('profiles/')) continue; // profile 已在逐 profile 阶段单独落盘
-    await host.writeFile(host.joinPath(homeRoot, rel), data);
+    const dest = host.joinPath(homeRoot, rel);
+    await host.writeFile(dest, data);
+    log(`写入 overrides/${rel} → ${dest}`);
   }
 }
 
@@ -316,22 +347,25 @@ async function pnpmInstall(host, target, opts, frozen) {
 }
 
 /** files[] 重内容：每个 url 依次尝试下载 → sha256+size 校验 → 落到 path。 */
-async function downloadFiles(host, target, files) {
+async function downloadFiles(host, target, files, log) {
   let count = 0;
   const tmp = await host.mkdtemp('dspack-files-');
   try {
     for (const f of files ?? []) {
       const rel = safeRel(f.path);
+      const dest = host.joinPath(target, rel);
       const tmpFile = host.joinPath(tmp, `dl-${count}`);
       let ok = false;
       let lastErr = null;
       for (const url of f.urls) {
+        log(`下载 ${rel} ← ${url}`);
         try {
           await host.download(url, tmpFile);
           ok = true;
           break;
         } catch (e) {
           lastErr = e;
+          log(`  失败：${e?.message ?? e}（尝试下一源）`);
         }
       }
       if (!ok) throw new Error(`files[] 下载失败：${rel}（${lastErr?.message ?? '无可用源'}）`);
@@ -341,7 +375,8 @@ async function downloadFiles(host, target, files) {
       if (sha !== String(f.sha256).toLowerCase() || (st?.size ?? -1) !== f.size) {
         throw new Error(`files[] 完整性校验失败：${rel}`);
       }
-      await host.move(tmpFile, host.joinPath(target, rel));
+      await host.move(tmpFile, dest);
+      log(`写入 ${rel} → ${dest}`);
       count += 1;
     }
     return count;
@@ -379,6 +414,12 @@ export async function reconcileProfile(host, profileDir, manifest) {
 }
 
 /* ------------------- 工具 ------------------- */
+
+/** 把 onOutput（任务中心 logSink）转成行式日志回调；无 sink 时为空操作。 */
+function makeLog(onOutput) {
+  if (typeof onOutput !== 'function') return () => {};
+  return (s) => onOutput(String(s) + '\n');
+}
 
 function parseJson(raw) {
   if (raw == null || raw === '') return null;

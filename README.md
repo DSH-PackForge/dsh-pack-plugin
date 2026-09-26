@@ -72,6 +72,8 @@ src/core/（vendored 引擎）                    src/locale（可选）
 | `pack/view` | 校验并查看 `.dspack` 内容 |
 | `pack/install` | 安装 `.dspack`（**非阻塞**，立即返回 `taskId`） |
 | `pack/market` | 浏览市场（index 列表 / 详情） |
+| `plugin/check-update` | About 页检查更新：拉 registry 最新版本，与本地比较返回 `{current, latest, outdated}` |
+| `plugin/open-url` | 用系统默认浏览器打开 http/https 链接（About 页作者 / 仓库 / 求 Star） |
 | `task/list` / `task/get` | 列出 / 查询任务中心任务（状态、阶段时间线、进程输出） |
 
 所有端点返回 `{ok:true, value} | {ok:false, error:{code,message,details}}`；非阻塞端点立即返回 `{taskId}`，执行进度经任务中心（内存注册表，`task/list` / `task/get` RPC 直读）呈现。

@@ -4,6 +4,18 @@
   "type": "module",
   "description": "DSH 纯方案 B 插件 bundle：.dspack 导出/导入/多 profile，零官方源码改动、零第三方插件",
   "license": "MIT",
+  "author": {
+    "name": "hxh230802",
+    "url": "https://github.com/hxh230802"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DSH-PackForge/dsh-pack-plugin.git"
+  },
+  "homepage": "https://github.com/DSH-PackForge/dsh-pack-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/DSH-PackForge/dsh-pack-plugin/issues"
+  },
   "icon": "icons/folder-zip-line.svg",
   "main": "src/index.js",
   "exports": {
