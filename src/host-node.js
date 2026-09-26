@@ -9,6 +9,12 @@ import http from 'node:http';
 import https from 'node:https';
 import { spawn, spawnSync } from 'node:child_process';
 
+// 下载超时策略：连接/响应头阶段 30s 无数据即判死；响应体阶段放宽到 5 分钟（慢速但持续有数据不误杀）。
+const DOWNLOAD_CONNECT_MS = 30_000;
+const DOWNLOAD_STALL_MS = 300_000;
+const DOWNLOAD_MAX_RETRIES = 2; // 瞬时失败（超时/断连）额外重试次数，共最多 3 次
+const DOWNLOAD_RETRY_BACKOFF_MS = 800;
+
 export class NodeHost {
   #rootCAs;
 
@@ -172,20 +178,35 @@ export class NodeHost {
   }
 
   async download(url, destAbs) {
-    try {
-      await this.#downloadOnce(url, destAbs, null);
-    } catch (e) {
+    let lastErr = null;
+    for (let attempt = 0; attempt <= DOWNLOAD_MAX_RETRIES; attempt += 1) {
+      try {
+        await this.#downloadOnce(url, destAbs, null);
+        return;
+      } catch (e) {
+        lastErr = e;
+      }
       // Windows 上部分站点（如 github.com）的证书链只认系统根 CA，Node bundled CA 认不到时
       // 自动加载系统根 CA 重试一次（信任系统信任存储，而非禁用校验）。
-      if (this.#isCertError(e)) {
+      if (this.#isCertError(lastErr)) {
         const cas = await this.#systemRootCAs();
         if (cas && cas.length) {
-          await this.#downloadOnce(url, destAbs, cas);
-          return;
+          try {
+            await this.#downloadOnce(url, destAbs, cas);
+            return;
+          } catch (e2) {
+            lastErr = e2;
+          }
         }
       }
-      throw e;
+      // 瞬时失败（超时 / 断连）退避后重试；非瞬时（4xx / 证书 / 无效地址）直接抛。
+      if (attempt < DOWNLOAD_MAX_RETRIES && this.#isRetryable(lastErr)) {
+        await new Promise((r) => setTimeout(r, DOWNLOAD_RETRY_BACKOFF_MS * (attempt + 1)));
+        continue;
+      }
+      throw lastErr;
     }
+    throw lastErr;
   }
 
   async #downloadOnce(url, destAbs, extraCa) {
@@ -200,28 +221,52 @@ export class NodeHost {
       if (!lib) return reject(new Error(`仅支持 http/https：${url}`));
       const options = { headers: { 'user-agent': 'dspack/0.1.0' } };
       if (extraCa) options.ca = extraCa;
+
+      let settled = false;
+      let phase = 'connect'; // 'connect'：连接 + 等响应头；'body'：响应体流式下载
+      const fail = (err) => { if (!settled) { settled = true; reject(err); } };
+
       const req = lib.get(url, options, (res) => {
         if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
           res.resume();
+          // 跟随重定向：每一跳独立重新走（各自超时 / 重试由 download 兜底）。
           return resolve(this.#downloadOnce(new URL(res.headers.location, u).href, destAbs, extraCa));
         }
         if (res.statusCode !== 200) {
           res.resume();
-          return reject(new Error(`下载失败：HTTP ${res.statusCode}`));
+          return fail(new Error(`下载失败：HTTP ${res.statusCode}`));
         }
+        // 响应头已到：把「连接/响应头」超时放宽为「停滞」超时，慢速但活跃的大文件不误杀。
+        phase = 'body';
+        req.setTimeout(DOWNLOAD_STALL_MS);
         const out = fs.createWriteStream(destAbs);
+        res.on('error', fail); // req.destroy 中断响应体时，避免 res 抛未处理的 'error'
         res.pipe(out);
-        out.on('finish', () => out.close(() => resolve()));
-        out.on('error', reject);
+        out.on('finish', () => out.close(() => { if (!settled) { settled = true; resolve(); } }));
+        out.on('error', fail);
       });
-      req.on('error', reject);
-      req.setTimeout(30_000, () => req.destroy(new Error('下载超时（30s）')));
+
+      const onTimeout = () => {
+        const msg = phase === 'connect'
+          ? `连接超时（${DOWNLOAD_CONNECT_MS / 1000}s 无响应）：${url}`
+          : `下载停滞（${DOWNLOAD_STALL_MS / 1000}s 无数据）：${url}`;
+        req.destroy(new Error(msg));
+      };
+      req.on('timeout', onTimeout);
+      req.on('error', fail);
+      req.setTimeout(DOWNLOAD_CONNECT_MS);
     });
   }
 
   #isCertError(e) {
     const m = String(e?.code ?? '') + ' ' + String(e?.message ?? '');
     return /UNABLE_TO_VERIFY|SELF_SIGNED|CERT_HAS_EXPIRED|UNABLE_TO_GET_ISSUER|verify the first certificate|ERR_TLS_CERT/i.test(m);
+  }
+
+  /** 瞬时网络失败（超时 / 断连 / 解析失败）可重试；4xx/证书错不重试。 */
+  #isRetryable(e) {
+    const m = String(e?.code ?? '') + ' ' + String(e?.message ?? '');
+    return /ETIMEDOUT|ESOCKETTIMEDOUT|ECONNRESET|ECONNREFUSED|EPIPE|ENOTFOUND|socket hang up|超时|停滞/i.test(m);
   }
 
   async #systemRootCAs() {
