@@ -9,6 +9,10 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { PROFILES_DIR, ACTIVE_NAME } from './runtime.js';
 import { RESERVED_PROFILE_NAMES } from './channel.js';
+import { HOME_ARTIFACT_STORE } from './core/home-store.js';
+
+// home 级换指 slot 的 stash 根目录（与 home-store.js 里 storeHomeRel 的 .dsh-pack 前缀一致）。
+const HOME_STASH = '.dsh-pack';
 
 const STATE_FILE = 'dsh-packforge.json';
 
@@ -89,4 +93,9 @@ export async function deleteProfile(home, name) {
     throw new Error(`「${name}」是当前激活的 profile，不能删除`);
   }
   await fsp.rm(path.join(home, PROFILES_DIR, name), { recursive: true, force: true });
+  // skills / .agent-presets 的真实数据在 .dsh-pack/<store>/<name>/（换指 slot），删 profile 时一并清除，
+  // 否则留在 home 里成孤儿（desktop 指针已指向别的 profile，谁也读不到它们）。
+  for (const store of Object.values(HOME_ARTIFACT_STORE)) {
+    await fsp.rm(path.join(home, HOME_STASH, store, name), { recursive: true, force: true });
+  }
 }
