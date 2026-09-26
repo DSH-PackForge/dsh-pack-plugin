@@ -15,11 +15,14 @@ const VERSION = typeof __PACKAGE_VERSION__ === 'undefined' ? '0.1.0' : __PACKAGE
 // logo（icons/folder-zip-line.svg 的 path），About 页用 currentColor 上色。
 const LOGO_PATH = 'M444.330667 128l85.333333 85.333333H896a42.666667 42.666667 0 0 1 42.666667 42.666667v597.333333a42.666667 42.666667 0 0 1-42.666667 42.666667H128a42.666667 42.666667 0 0 1-42.666667-42.666667V170.666667a42.666667 42.666667 0 0 1 42.666667-42.666667h316.330667zM768 768h-170.666667v-128h85.333334v-85.333333h-85.333334v-85.333334h85.333334V384h-85.333334V298.666667h-102.997333l-85.333333-85.333334H170.666667v597.333334h682.666666V298.666667h-170.666666v85.333333h85.333333v85.333333h-85.333333v85.333334h85.333333v213.333333z';
 
-// About 页外部链接（作者 / 仓库 / 求 Star），点击经 plugin/open-url 用系统浏览器打开。
+// About 页外部链接（作者 / 仓库 / 求 Star / 生态），点击经 plugin/open-url 用系统浏览器打开。
 const AUTHOR = 'hxh230802';
 const AUTHOR_URL = 'https://github.com/hxh230802';
 const REPO_URL = 'https://github.com/DSH-PackForge/dsh-pack-plugin';
 const NPM_URL = 'https://www.npmjs.com/package/@dsh-packforge/dsh-pack-plugin';
+const SPEC_URL = 'https://github.com/DSH-PackForge/DSH-PackForge';
+const APP_URL = 'https://github.com/DSH-PackForge/dsh-packforge-app';
+const MARKET_URL = 'https://github.com/DSH-PackForge/dsh-pack-market';
 
 const dict = {
   zh: {
@@ -114,6 +117,11 @@ const dict = {
     'about.newVersion': '有新版本 {latest}（当前 {current}）',
     'about.checkFailed': '检查更新失败',
     'about.viewNpm': '在 npm 查看',
+    'about.ecosystem': '生态',
+    'about.ecosystem.spec': '理念及规范',
+    'about.ecosystem.app': '包管理器',
+    'about.ecosystem.market': '市场',
+    'about.copyright': '© 2026 DSH-PackForge contributors · MIT License',
   },
   en: {
     nav: 'Modpacks',
@@ -190,6 +198,11 @@ const dict = {
     'about.newVersion': 'New version {latest} (current {current})',
     'about.checkFailed': 'Update check failed',
     'about.viewNpm': 'View on npm',
+    'about.ecosystem': 'Ecosystem',
+    'about.ecosystem.spec': 'Philosophy & Spec',
+    'about.ecosystem.app': 'Package Manager',
+    'about.ecosystem.market': 'Market',
+    'about.copyright': '© 2026 DSH-PackForge contributors · MIT License',
   },
 };
 
@@ -777,6 +790,17 @@ export function DspackSection({ t, packforge }) {
         h('button', { type: 'button', style: style.btnSmall, onClick: () => openUrl(REPO_URL) }, t('about.repo')),
         h('button', { type: 'button', style: style.btnSmall, onClick: () => openUrl(REPO_URL) }, `⭐ ${t('about.star')}`),
       ),
+      // —— 生态（DSH-PackForge 名下其它项目）——
+      h('div', { style: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, width: '100%', maxWidth: 440, paddingTop: 14, borderTop: '1px solid var(--dsw-alias-border-l2)' } },
+        h('p', { style: style.groupTitle }, t('about.ecosystem')),
+        h('div', { style: { ...style.row, justifyContent: 'center' } },
+          h('button', { type: 'button', style: style.btnSmall, onClick: () => openUrl(SPEC_URL) }, t('about.ecosystem.spec')),
+          h('button', { type: 'button', style: style.btnSmall, onClick: () => openUrl(APP_URL) }, t('about.ecosystem.app')),
+          h('button', { type: 'button', style: style.btnSmall, onClick: () => openUrl(MARKET_URL) }, t('about.ecosystem.market')),
+        ),
+      ),
+      // —— 版权说明 ——
+      h('p', { style: { ...style.hint, margin: '4px 0 0', textAlign: 'center', maxWidth: 440 } }, t('about.copyright')),
     );
   };
 
