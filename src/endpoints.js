@@ -37,6 +37,12 @@ const PACKAGE_VERSION = require('../package.json').version;
 const NPM_REGISTRY = 'https://registry.npmjs.org';
 const NPM_URL = `https://www.npmjs.com/package/${MANAGER}`;
 
+// 新建 profile 的官方基线 bundle（web 模板）。这是「模板型 bundle」：只进 dsh.profile.bundles、
+// 不进 dependencies —— boot 时由 DSH 安装目录（installAnchor）fallback 兜底解析（见 core/install.js
+// reconcileProfile 的「模板型 bundle」注释）。来源：@deepseek-ai/dsh-app-boot 的 PROFILE_TEMPLATES.web
+// = base + web-app；缺了 web-app，切过去就没有 UI。
+const BASELINE_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'];
+
 // 简版 semver 比较（去 prerelease 后缀，逐段比数值）：>0 表示 a 更新。
 function cmpVersion(a, b) {
   const nums = (v) => String(v).split('-')[0].split('.').map((n) => parseInt(n, 10) || 0);
@@ -96,19 +102,20 @@ export const ENDPOINTS = {
       throw new Error(`profile「${name}」已存在`);
     }
 
-    // 空整合包也要有基本插件基线：写最小 package.json + 迁装管理器（+fflate），否则切过去就是单程票、
-    // 且 switch 会因缺 package.json 抛错。与 install/export 一致走任务中心，关面板不丢进度。
+    // 空整合包也要有官方基线 bundle（base + web-app，缺了就没 UI）+ 迁装管理器（+fflate），
+    // 否则切过去就是单程票、且 switch 会因缺 package.json 抛错。与 install/export 一致走任务中心，
+    // 关面板不丢进度。
     const id = tasks.createTask({ kind: 'create', title: `创建 ${name}`, home: runtime?.home });
     tasks.enqueue(async () => {
       const progress = tasks.progressBridge(id);
       try {
-        progress('init', '创建目录与 package.json');
+        progress('init', '创建目录与 package.json（含官方基线 bundle）');
         const target = await createProfile(runtime.home, name);
         await fsp.writeFile(path.join(target, 'package.json'), `${JSON.stringify({
           name: `dsh-profile-${name}`,
           private: true,
           dependencies: {},
-          dsh: { profile: { bundles: [] } },
+          dsh: { profile: { bundles: [...BASELINE_BUNDLES] } },
         }, null, 2)}\n`);
         progress('manager', '迁装管理器（基本插件）');
         await ensureManagerInProfile(runtime, name);
