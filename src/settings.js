@@ -30,6 +30,8 @@ const dict = {
     'action.market': '浏览市场',
     'action.refresh': '刷新',
     'action.tasks': '任务中心',
+    'tasks.empty': '暂无任务',
+    'tasks.close': '关闭',
     'installed.title': '已安装的整合包',
     'action.delete': '删除',
     'hint.restart': '点切换后重启生效',
@@ -68,7 +70,7 @@ const dict = {
     'result.loaded': '已读取工作区配置',
     'result.noCfg': '该 profile 暂无已保存的工作区配置',
     'result.pending': '处理中…',
-    'result.taskStarted': '已加入任务中心，进度见小窗',
+    'result.taskStarted': '已加入任务中心，进度见面板',
     'result.noRpc': '后端 RPC 不可用（connection 服务缺失）',
     'err.name': '请填写 profile 名',
     'err.source': '请填写 .dspack 路径或 URL',
@@ -111,6 +113,8 @@ const dict = {
     'action.market': 'Browse market',
     'action.refresh': 'Refresh',
     'action.tasks': 'Task Center',
+    'tasks.empty': 'No tasks',
+    'tasks.close': 'Close',
     'installed.title': 'Installed modpacks',
     'action.delete': 'Delete',
     'hint.restart': 'Takes effect after restart',
@@ -132,7 +136,7 @@ const dict = {
     'action.switch': 'Switch',
     'action.create': 'Create',
     'result.pending': 'Working…',
-    'result.taskStarted': 'Added to task center — see the popup',
+    'result.taskStarted': 'Added to task center — see the panel',
     'result.noRpc': 'Backend RPC unavailable (no connection service)',
     'err.name': 'Please fill a profile name',
     'err.source': 'Please fill a .dspack path or URL',
@@ -218,6 +222,8 @@ export function DspackSection({ t, packforge }) {
   const [loadedFor, setLoadedFor] = useState(null); // 已自动加载过配置的 profile 名
   const [confirm, setConfirm] = useState(null); // null | {from,to,hasManager,firstTime}
   const [managerSource, setManagerSource] = useState('copy'); // 'copy' | 'npm'（目标缺管理器时的安装方式）
+  const [tasksOpen, setTasksOpen] = useState(false); // 任务中心面板是否展开（内嵌视图，替代旧版独立小窗）
+  const [taskList, setTaskList] = useState([]); // task/list 轮询结果
 
   const call = async (endpoint, payload) => {
     if (!rpc) return { ok: false, error: t('result.noRpc') };
@@ -240,6 +246,7 @@ export function DspackSection({ t, packforge }) {
 
   // 轮询任务到结束：完成后刷新 profile 列表；失败就地把错误弹到面板。
   const watch = (id) => {
+    setTasksOpen(true); // 任务开始即展开任务中心面板（替代旧版自动弹出独立小窗）
     const timer = setInterval(async () => {
       const r = await call('task/get', { id });
       if (!r.ok) { clearInterval(timer); return; }
@@ -301,9 +308,8 @@ export function DspackSection({ t, packforge }) {
     watch(r.value.taskId);
   };
 
-  const doOpenTasks = async () => {
-    const r = await call('task/window-open', {});
-    if (!r.ok) showErr(r.error);
+  const doOpenTasks = () => {
+    setTasksOpen((v) => !v);
   };
 
   const doOpenDir = async (name) => {
@@ -452,6 +458,21 @@ export function DspackSection({ t, packforge }) {
     void loadConfig(exportProfile, true);
   }, [tab, exportProfile, loadedFor]);
 
+  // 任务中心面板：展开期间轮询 task/list（600ms），收起即停止。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!tasksOpen) return;
+    let stopped = false;
+    const load = async () => {
+      const r = await call('task/list', {});
+      if (stopped || !r.ok) return;
+      setTaskList(r.value.tasks ?? []);
+    };
+    void load();
+    const timer = setInterval(load, 600);
+    return () => { stopped = true; clearInterval(timer); };
+  }, [tasksOpen]);
+
   const style = {
     section: { display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 720, padding: '8px 0' },
     tabs: { display: 'flex', gap: 4, borderBottom: '1px solid var(--dsw-alias-border-l2)', paddingBottom: 8 },
@@ -544,6 +565,14 @@ export function DspackSection({ t, packforge }) {
       fontSize: 13, lineHeight: '18px', background: '#4b7bec', color: '#fff', fontWeight: 600, font: 'inherit',
       width: 'fit-content', flex: '0 0 auto',
     },
+    // —— 任务中心内嵌面板 ——
+    taskPanel: { display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 12px', marginBottom: 12, borderRadius: 10, border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-1)' },
+    taskCard: { display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 12px', borderRadius: 10, border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-1)' },
+    taskTitle: { fontSize: 13, fontWeight: 600, lineHeight: '20px', color: 'var(--dsw-alias-label-primary)', wordBreak: 'break-all' },
+    taskTimeline: { display: 'flex', flexWrap: 'wrap', gap: '6px 16px' },
+    taskStep: { display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)' },
+    taskDot: { width: 14, height: 14, borderRadius: '50%', flex: '0 0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, lineHeight: 1, border: '1.5px solid var(--dsw-alias-border-l2)', color: 'transparent', background: 'transparent' },
+    taskLog: { margin: 0, padding: '8px 10px', borderRadius: 8, border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-secondary)', font: '12px/1.5 ui-monospace, Consolas, "Courier New", monospace', maxHeight: 160, overflow: 'auto', whiteSpace: 'pre-wrap', wordBreak: 'break-all' },
   };
 
   const fieldInput = (key) =>
@@ -774,6 +803,54 @@ export function DspackSection({ t, packforge }) {
     );
   };
 
+  // —— 任务中心内嵌面板：就地渲染内存里的任务（task/list 轮询），替代旧版独立 electron/WPF 小窗 ——
+  const TASK_STATUS = {
+    queued: ['排队中', '#e8a23a'],
+    running: ['进行中', '#6ab7ff'],
+    done: ['完成', '#2ea44f'],
+    failed: ['失败', '#d3383a'],
+  };
+  const taskDotStyle = (status) =>
+    status === 'done' ? { borderColor: '#2ea44f', background: '#2ea44f', color: '#fff' }
+      : status === 'failed' ? { borderColor: '#d3383a', background: '#d3383a', color: '#fff' }
+        : status === 'running' ? { borderColor: '#6ab7ff', color: '#6ab7ff' }
+          : {};
+
+  const renderTasks = () => {
+    const cards = taskList.map((t) => {
+      const [stLabel, stColor] = TASK_STATUS[t.status] || ['?', '#9a9ba3'];
+      const log = t.log || [];
+      const stages = t.stages || [];
+      return h('li', { key: t.id, style: style.taskCard },
+        h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } },
+          h('span', { style: style.taskTitle }, t.title || '任务'),
+          h('span', { style: { flex: '0 0 auto', fontSize: 12, fontWeight: 600, color: stColor } }, stLabel),
+        ),
+        stages.length
+          ? h('div', { style: style.taskTimeline },
+              stages.map((s) =>
+                h('span', { key: s.id, style: style.taskStep },
+                  h('span', { style: { ...style.taskDot, ...taskDotStyle(s.status) } }, s.status === 'done' ? '✓' : s.status === 'failed' ? '✗' : ''),
+                  h('span', null, s.label),
+                ),
+              ),
+            )
+          : null,
+        t.error ? h('p', { style: style.err }, '错误：' + t.error) : null,
+        log.length
+          ? h('pre', { style: style.taskLog }, (t.logTruncated ? '…（已截断，仅保留最后 ' + log.length + ' 行）\n' : '') + log.join('\n'))
+          : null,
+      );
+    });
+    return h('div', { style: style.taskPanel },
+      h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 } },
+        h('h3', { style: style.groupTitle }, t('action.tasks')),
+        h('button', { type: 'button', style: style.btnSmall, onClick: doOpenTasks, title: t('tasks.close') }, '✕'),
+      ),
+      taskList.length === 0 ? h('p', { style: style.line }, t('tasks.empty')) : h('ul', { style: style.list }, cards),
+    );
+  };
+
   return h(Fragment, null,
     h('div', { style: style.section },
     h('div', { style: style.tabs },
@@ -783,6 +860,7 @@ export function DspackSection({ t, packforge }) {
         onClick: () => { setTab(id); if (id === 'market' && market === null) void loadMarket(); },
       }, t('tab.' + id))),
     ),
+    tasksOpen ? renderTasks() : null,
     content,
     tab === 'manage' ? h('p', { style: style.hint }, t('hint.restart')) : null,
     result

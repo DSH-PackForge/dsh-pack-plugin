@@ -19,7 +19,7 @@ DSH 整合包（`.dspack`）的**纯方案 B 插件 bundle**：一个自包含�
 - **home 级 skills / .agent-presets 隔离**：per-profile 槽位（junction），换 profile 时一并换指（见下文）。
 - **市场浏览**：`index.json` 精简指针 + `packs/<owner>.<repo>/` 懒加载完整清单 / README。
 - **工作区配置 `.dshpkcfg`**：每个 profile 一份，保存 / 读取 / 自动回填。
-- **任务中心**：`install` / `export` / `create` 非阻塞执行，独立进度小窗显示阶段时间线与进程输出。
+- **任务中心**：`install` / `export` / `create` 非阻塞执行，设置面板内嵌视图显示阶段时间线与进程输出。
 
 ## 架构
 
@@ -30,7 +30,7 @@ src/rpc.js     │ registerRpc(ctx, runtime)   src/client-plugin.js（dspackforg
 src/endpoints.js  → ctx.webServer 挂 /dsh-pack 前缀路由
 src/channel.js ┘                             src/client-rpc.js（rpc.call 封装）
 src/profiles.js / junction.js                src/settings.js（slots 设置页：管理/导出/市场）
-src/migrate.js / migrate-helper.js           src/task-center.html / progress.html
+src/migrate.js / migrate-helper.js           src/progress.html
 src/ensure-manager.js / tasks.js / progress.js
 src/core/（vendored 引擎）                    src/locale（可选）
 ```
@@ -73,9 +73,8 @@ src/core/（vendored 引擎）                    src/locale（可选）
 | `pack/install` | 安装 `.dspack`（**非阻塞**，立即返回 `taskId`） |
 | `pack/market` | 浏览市场（index 列表 / 详情） |
 | `task/list` / `task/get` | 列出 / 查询任务中心任务（状态、阶段时间线、进程输出） |
-| `task/window-open` | 打开（或聚焦）任务中心小窗 |
 
-所有端点返回 `{ok:true, value} | {ok:false, error:{code,message,details}}`；非阻塞端点立即返回 `{taskId}`，执行进度经任务中心（内存注册表 + `os.tmpdir()/dsh-pack-tasks-<home>.json` 快照文件跨进程）呈现。
+所有端点返回 `{ok:true, value} | {ok:false, error:{code,message,details}}`；非阻塞端点立即返回 `{taskId}`，执行进度经任务中心（内存注册表，`task/list` / `task/get` RPC 直读）呈现。
 
 ## 结构
 
@@ -91,10 +90,10 @@ src/                       host 插件 + client 插件源码
   junction.js              desktop + skills/.agent-presets junction 换指（repointHomeArtifact）
   migrate.js / migrate-helper.js   首次迁移脱管 helper（杀桌面→换指→重启）
   ensure-manager.js        空整合包管理器基线（复制 manager + fflate）
-  tasks.js                 任务中心内存注册表 + 快照文件
-  task-center-main.cjs / task-center.html   任务中心小窗（electron main + UI）
-  progress.js / progress-main.cjs / progress.html / progress-window.ps1   切换进度窗
-  settings.js              客户端设置面板（管理 / 导出 / 市场三个 tab + 弹窗）
+  tasks.js                 任务中心内存注册表（task/list / task/get）
+  progress.js / progress-main.cjs / progress.html / progress-window.ps1   切换进度窗（electron + 打包态 WPF）
+  packaged.js              打包态判定（切换进度窗走 electron GUI 还是 WPF）
+  settings.js              客户端设置面板（管理 / 导出 / 市场 / 关于 tab + 任务中心面板 + 弹窗）
   client.js / client-plugin.js / client-rpc.js   客户端 bundle 入口 / 插件面（dspackforge）/ rpc 封装
   core/                    vendored 整合包引擎（仅 import fflate）
     index.js               公共 API 出口
@@ -131,5 +130,5 @@ pnpm bundle        # 生成 lib/client.js（浏览器 bundle）
 - 自包含重构完成：无 `@dsh-packforge/*` 依赖，仅 UI + 后端（AI 整合包管理已移除）。
 - 多 profile 切换（junction 换指 + 首次迁移脱管 helper）已实现并通过测试。
 - skills / .agent-presets per-profile junction 隔离已实现并通过测试（真实 Windows junction 冒烟：skills/.agent-presets 被跟随、profiles/desktop 被跳过、.dsh-pack 被排除）。
-- 工作区配置 `.dshpkcfg`、市场浏览、任务中心（非阻塞 + 快照跨进程）已接线。
+- 工作区配置 `.dshpkcfg`、市场浏览、任务中心（非阻塞 + 内嵌面板）已接线。
 - `export` / `install` 端到端仍需真实 profile + pnpm 环境验证。

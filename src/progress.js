@@ -6,9 +6,11 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { isPackagedBuild } from './packaged.js';
 
 const FILE = 'progress.json';
 const MAIN = fileURLToPath(new URL('./progress-main.cjs', import.meta.url));
+const PS1 = fileURLToPath(new URL('./progress-window.ps1', import.meta.url));
 
 const LABELS = {
   install: '安装整合包插件',
@@ -103,9 +105,20 @@ export async function setPhase(home, phase, error = null) {
  * 杀树脚本仍按 pid 排除本窗口整棵子树（见 migrate-helper.js 的 $skip），防止直接 Stop-Process 它。
  */
 export function spawnProgressWindow(home) {
+  const file = progressPath(home);
+  // 打包态：process.execPath 是 app 二进制，spawn 它只会拉起一个完整 app 副本（electron 独立
+  // 进度窗必死）。改走 PowerShell WPF（progress-window.ps1）。开发态仍用 electron GUI 小窗。
+  if (process.platform === 'win32' && isPackagedBuild()) {
+    const child = spawn('powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', PS1, '-ProgressFile', file],
+      { detached: true, stdio: 'ignore', windowsHide: true });
+    child.on('error', () => {});
+    child.unref();
+    return child.pid;
+  }
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE; // 防御：绝不把 RUN_AS_NODE 漏给 GUI 进程
-  const child = spawn(process.execPath, [MAIN, `--progress-file=${progressPath(home)}`], {
+  const child = spawn(process.execPath, [MAIN, `--progress-file=${file}`], {
     detached: true,
     stdio: 'ignore',
     env,

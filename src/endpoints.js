@@ -98,7 +98,6 @@ export const ENDPOINTS = {
         tasks.finish(id, { ok: false, error: String(e?.message ?? e) });
       }
     }).catch(() => {});
-    void tasks.ensureWindow(runtime?.home);
     return { taskId: id };
   },
 
@@ -185,7 +184,6 @@ export const ENDPOINTS = {
         tasks.finish(id, { ok: false, error: String(e?.message ?? e) });
       }
     }).catch(() => {});
-    void tasks.ensureWindow(runtime?.home);
     return { taskId: id };
   },
 
@@ -254,7 +252,6 @@ export const ENDPOINTS = {
         tasks.finish(id, { ok: false, error: String(e?.message ?? e) });
       }
     }).catch(() => {});
-    void tasks.ensureWindow(runtime?.home);
     return { taskId: id };
   },
 
@@ -267,9 +264,4 @@ export const ENDPOINTS = {
   'task/list': async () => ({ tasks: tasks.list() }),
 
   'task/get': async ({ payload }) => tasks.get(payload?.id),
-
-  'task/window-open': async ({ runtime }) => {
-    await tasks.ensureWindow(runtime?.home);
-    return { opened: true };
-  },
 };
