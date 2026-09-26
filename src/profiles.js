@@ -89,7 +89,10 @@ export async function createProfile(home, name) {
 }
 
 export async function deleteProfile(home, name) {
-  if (name === ACTIVE_NAME || name === 'default') {
+  // desktop 指针、default 存档、以及当前激活的真实 profile 都不可删，
+  // 否则 desktop / skills / .agent-presets 会成悬空指针。
+  const active = await resolveActiveName({ profilesDir: path.join(home, PROFILES_DIR) });
+  if (name === ACTIVE_NAME || name === 'default' || name === active) {
     throw new Error(`「${name}」是当前激活的 profile，不能删除`);
   }
   await fsp.rm(path.join(home, PROFILES_DIR, name), { recursive: true, force: true });

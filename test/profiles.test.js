@@ -43,3 +43,19 @@ test('deleteProfile：保留名 desktop / default 拒绝删除', async () => {
     await fsp.rm(home, { recursive: true, force: true });
   }
 });
+
+test('deleteProfile：拒绝删除当前激活的 profile（desktop 是 junction）', async () => {
+  const kind = process.platform === 'win32' ? 'junction' : 'dir';
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'dsh-pack-del-'));
+  try {
+    const wwwa = path.join(home, 'profiles', 'wwwa');
+    await fsp.mkdir(wwwa, { recursive: true });
+    await fsp.writeFile(path.join(wwwa, 'package.json'), '{}');
+    await fsp.symlink(wwwa, path.join(home, 'profiles', 'desktop'), kind);
+
+    await assert.rejects(() => deleteProfile(home, 'wwwa'), /不能删除/);
+    assert.equal(await exists(wwwa), true);
+  } finally {
+    await fsp.rm(home, { recursive: true, force: true });
+  }
+});
