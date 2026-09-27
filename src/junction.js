@@ -36,7 +36,7 @@ async function exists(p) {
  * 把激活指针 desktop 换到目标 profile。
  * @returns {Promise<{active:string, method:'junction', requiresRestart:true, previous:string}>}
  */
-export async function switchProfile(runtime, target, { swapSkills = true, allowDelegate = true, onProgress, managerSource = 'copy' } = {}) {
+export async function switchProfile(runtime, target, { swapSkills = true, allowDelegate = true, onProgress, managerSource = 'npm' } = {}) {
   const { profilesDir, home } = runtime;
   const desktop = path.join(profilesDir, ACTIVE_NAME);
   const targetDir = path.join(profilesDir, target);

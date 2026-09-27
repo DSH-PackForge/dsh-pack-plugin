@@ -280,7 +280,7 @@ export function DspackSection({ t, packforge }) {
   const [exportContent, setExportContent] = useState({ skill: false, preset: false, instruction: false });
   const [loadedFor, setLoadedFor] = useState(null); // 已自动加载过配置的 profile 名
   const [confirm, setConfirm] = useState(null); // null | {from,to,hasManager,firstTime}
-  const [managerSource, setManagerSource] = useState('copy'); // 'copy' | 'npm'（目标缺管理器时的安装方式）
+  const [managerSource, setManagerSource] = useState('npm'); // 'npm'（拉取最新，默认）| 'copy'（次之复制）
   const [tasksOpen, setTasksOpen] = useState(false); // 任务中心面板是否展开（内嵌视图，替代旧版独立小窗）
   const [taskList, setTaskList] = useState([]); // task/list 轮询结果
   const [update, setUpdate] = useState(null); // null | {checking:true} | {current,latest,outdated,npmUrl} | {error}
@@ -366,7 +366,7 @@ export function DspackSection({ t, packforge }) {
   const askSwitch = async (name) => {
     const r = await call('profile/switch-check', { name });
     if (!r.ok) return showErr(r.error);
-    setManagerSource('copy');
+    setManagerSource('npm');
     setConfirm({
       from: r.value.from,
       to: r.value.to,
@@ -904,14 +904,6 @@ export function DspackSection({ t, packforge }) {
         ),
         confirm.hasManager ? null : h('div', { style: style.group },
           h('span', { style: style.fieldLabel }, t('confirm.managerSource')),
-          h('label', { key: 'copy', style: style.row },
-            h('input', {
-              type: 'radio', name: 'managerSource', checked: managerSource === 'copy',
-              style: { width: 14, height: 14, cursor: 'pointer', accentColor: '#4b7bec' },
-              onChange: () => setManagerSource('copy'),
-            }),
-            h('span', { style: style.line }, t('confirm.source.copy')),
-          ),
           h('label', { key: 'npm', style: style.row },
             h('input', {
               type: 'radio', name: 'managerSource', checked: managerSource === 'npm',
@@ -919,6 +911,14 @@ export function DspackSection({ t, packforge }) {
               onChange: () => setManagerSource('npm'),
             }),
             h('span', { style: style.line }, t('confirm.source.npm')),
+          ),
+          h('label', { key: 'copy', style: style.row },
+            h('input', {
+              type: 'radio', name: 'managerSource', checked: managerSource === 'copy',
+              style: { width: 14, height: 14, cursor: 'pointer', accentColor: '#4b7bec' },
+              onChange: () => setManagerSource('copy'),
+            }),
+            h('span', { style: style.line }, t('confirm.source.copy')),
           ),
         ),
         h('p', { style: style.hint }, t('confirm.hintRestart')),

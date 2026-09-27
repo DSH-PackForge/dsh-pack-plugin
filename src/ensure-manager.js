@@ -5,8 +5,10 @@
 // 所以从当前激活 profile（来源）复制它到目标即可，npm 发布前无需联网。
 //
 // 安装来源两种：
-//   - copy（默认）：从当前激活 profile 复制管理器 + 顶层 fflate，离线、快。
-//   - npm：从 registry 拉最新版 tarball 解包（只落这一个包，不碰目标其它依赖）。
+//   - npm（切换默认）：从 registry 拉最新版 tarball 解包（只落这一个包，不碰目标其它依赖）。
+//   - copy：从当前激活 profile 复制管理器 + 顶层 fflate，离线、快。
+// 拉取最新失败（未发布 / 网络不通）时次之回退 copy —— 管理器只在自己 profile 里运行，来源必有，
+// 离线也能迁装，不让切换硬失败。
 //
 // 注意 host 运行时依赖 fflate（dspack 的 zip 逻辑），pnpm 会把它提升到 profile 顶层
 // node_modules（不是在插件目录里），因此迁移必须连带搬到目标顶层，否则 ESM 解析不到。
@@ -54,8 +56,9 @@ function hasManagerBundle(manifest) {
  * 把管理器从当前激活 profile 迁装进 target（幂等）。
  * @param {object} runtime { profilesDir, home }
  * @param {string} target 目标 profile 名
- * @param {{source?: 'copy'|'npm'}} [opts] 安装来源，默认 copy
- * @returns {Promise<{installed:boolean, spec:string}>}
+ * @param {{source?: 'copy'|'npm'}} [opts] 安装来源；切换走 npm（拉取最新，失败次之回退 copy），
+ *        创建空整合包走默认 copy（离线）。
+ * @returns {Promise<{installed:boolean, spec:string, source:string}>}
  */
 export async function ensureManagerInProfile(runtime, target, { source = 'copy' } = {}) {
   const sourceDir = path.join(runtime.profilesDir, ACTIVE_NAME);
@@ -65,12 +68,22 @@ export async function ensureManagerInProfile(runtime, target, { source = 'copy' 
   const alreadyInstalled = hasManagerBundle(targetManifest)
     && await exists(path.join(managerDir(targetDir), 'package.json'));
   if (alreadyInstalled) {
-    return { installed: false, spec: targetManifest.dependencies?.[MANAGER] };
+    return { installed: false, spec: targetManifest.dependencies?.[MANAGER], source: 'installed' };
   }
 
-  const spec = source === 'npm'
-    ? await npmPullManager(runtime, targetDir, sourceDir)
-    : await copyManager(sourceDir, targetDir, target);
+  // npm（拉取最新）失败时次之回退 copy（复制当前 profile 的管理器，离线可靠）。
+  let spec;
+  let used = source;
+  if (source === 'npm') {
+    try {
+      spec = await npmPullManager(runtime, targetDir, sourceDir);
+    } catch {
+      spec = await copyManager(sourceDir, targetDir, target);
+      used = 'copy';
+    }
+  } else {
+    spec = await copyManager(sourceDir, targetDir, target);
+  }
 
   // 登记进目标 package.json：dependencies + bundles。
   targetManifest.dependencies ??= {};
@@ -83,7 +96,7 @@ export async function ensureManagerInProfile(runtime, target, { source = 'copy' 
   }
   await writeManifest(targetDir, targetManifest);
 
-  return { installed: true, spec };
+  return { installed: true, spec, source: used };
 }
 
 /** 来源 profile 复制（离线）：管理器本体 + 被 pnpm 提升到顶层的运行时依赖。 */

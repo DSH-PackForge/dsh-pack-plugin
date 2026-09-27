@@ -140,7 +140,7 @@ export const ENDPOINTS = {
     const name = need(payload?.name, '缺少 profile 名');
     return await switchProfile(runtime, name, {
       swapSkills: payload?.swapSkills !== false,
-      managerSource: payload?.managerSource === 'npm' ? 'npm' : 'copy',
+      managerSource: payload?.managerSource === 'copy' ? 'copy' : 'npm',
     });
   },
 
