@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { deleteProfile } from '../src/profiles.js';
+import { deleteProfile, listProfiles } from '../src/profiles.js';
 
 const exists = (p) => fsp.stat(p).then(() => true, () => false);
 
@@ -39,6 +39,24 @@ test('deleteProfile：保留名 desktop / default 拒绝删除', async () => {
     await assert.rejects(() => deleteProfile(home, 'default'), /不能删除/);
     // 其它 profile 的 slot 不受影响
     assert.equal(await exists(path.join(home, '.dsh-pack', 'skills', 'mypack')), true);
+  } finally {
+    await fsp.rm(home, { recursive: true, force: true });
+  }
+});
+
+test('listProfiles：忽略 node_modules / __temp__ / 点目录，只列真实 profile', async () => {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'dsh-pack-list-'));
+  try {
+    const profilesDir = path.join(home, 'profiles');
+    for (const n of ['aaa', 'node_modules', '__temp__', '.hidden']) {
+      await fsp.mkdir(path.join(profilesDir, n), { recursive: true });
+    }
+    // desktop 是真实目录 → 未切换前补一条 default
+    await fsp.mkdir(path.join(profilesDir, 'desktop'), { recursive: true });
+
+    const list = await listProfiles({ profilesDir });
+    const names = list.map((p) => p.name);
+    assert.deepEqual(names, ['default', 'aaa']);
   } finally {
     await fsp.rm(home, { recursive: true, force: true });
   }

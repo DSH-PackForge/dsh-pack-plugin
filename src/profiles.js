@@ -10,6 +10,7 @@ import path from 'node:path';
 import { PROFILES_DIR, ACTIVE_NAME } from './runtime.js';
 import { RESERVED_PROFILE_NAMES } from './channel.js';
 import { HOME_ARTIFACT_STORE } from './core/home-store.js';
+import { skipProfileDir } from './core/discovery.js';
 
 // home 级换指 slot 的 stash 根目录（与 home-store.js 里 storeHomeRel 的 .dsh-pack 前缀一致）。
 const HOME_STASH = '.dsh-pack';
@@ -64,6 +65,7 @@ export async function listProfiles(runtime) {
     for (const d of await fsp.readdir(profilesDir, { withFileTypes: true })) {
       if (d.name === ACTIVE_NAME) continue; // 指针占位，不单独列出
       if (!d.isDirectory()) continue;
+      if (skipProfileDir(d.name)) continue; // node_modules / __temp__ / 点目录不是整合包
       const abs = path.join(profilesDir, d.name);
       entries.push({ name: d.name, dir: abs, active: d.name === activeName, junction: false });
     }
