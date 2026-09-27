@@ -4,7 +4,7 @@ import http from 'node:http';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { NodeHost } from '../src/host-node.js';
+import { NodeHost, resolvePnpmEntry } from '../src/host-node.js';
 
 const host = new NodeHost();
 
@@ -12,6 +12,27 @@ const host = new NodeHost();
 async function startServer(handler) {
   let hits = 0;
   const server = http.createServer((req, res) => { hits += 1; handler(req, res, hits); });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  return { port: server.address().port, hits: () => hits, close: () => new Promise((r) => server.close(r)) };
+}
+
+/** 起一个极简 HTTP 正向代理：收到绝对 URI 请求后转发到目标，记录 hits（证明请求确实经过它）。 */
+async function startProxy() {
+  let hits = 0;
+  const server = http.createServer((req, res) => {
+    hits += 1;
+    let target;
+    try { target = new URL(req.url); } catch { res.writeHead(400); res.end(); return; }
+    const upstream = http.request({
+      host: target.hostname, port: target.port || 80,
+      path: target.pathname + target.search, method: req.method,
+    }, (up) => {
+      res.writeHead(up.statusCode ?? 200, up.headers);
+      up.pipe(res);
+    });
+    upstream.on('error', () => { res.writeHead(502); res.end(); });
+    req.pipe(upstream);
+  });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   return { port: server.address().port, hits: () => hits, close: () => new Promise((r) => server.close(r)) };
 }
@@ -56,6 +77,49 @@ test('download：瞬时断连自动重试后成功', async () => {
   }
 });
 
+test('download：设置代理后经代理转发（不直连）', async () => {
+  const srv = await startServer((_req, res) => { res.writeHead(200); res.end('via-proxy'); });
+  const proxy = await startProxy();
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'dspack-dl-'));
+  try {
+    host.setProxy(`http://127.0.0.1:${proxy.port}`);
+    const dest = path.join(dir, 'pack.dspack');
+    await host.download(`http://127.0.0.1:${srv.port}/pack.dspack`, dest);
+    assert.equal(await fsp.readFile(dest, 'utf8'), 'via-proxy');
+    assert.equal(proxy.hits(), 1); // 请求确实走了代理
+  } finally {
+    host.setProxy(null);
+    await fsp.rm(dir, { recursive: true, force: true });
+    await proxy.close();
+    await srv.close();
+  }
+});
+
+test('download：setProxy("direct") 覆盖显式代理，强制直连', async () => {
+  const srv = await startServer((_req, res) => { res.writeHead(200); res.end('direct-bytes'); });
+  const proxy = await startProxy();
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'dspack-dl-'));
+  try {
+    // 先设显式代理，确认走代理
+    host.setProxy(`http://127.0.0.1:${proxy.port}`);
+    const a = path.join(dir, 'a');
+    await host.download(`http://127.0.0.1:${srv.port}/p`, a);
+    assert.equal(proxy.hits(), 1);
+
+    // 再切成 direct，应绕过代理直连（proxy 命中数不变）
+    host.setProxy('direct');
+    const b = path.join(dir, 'b');
+    await host.download(`http://127.0.0.1:${srv.port}/p`, b);
+    assert.equal(await fsp.readFile(b, 'utf8'), 'direct-bytes');
+    assert.equal(proxy.hits(), 1);
+  } finally {
+    host.setProxy(null);
+    await fsp.rm(dir, { recursive: true, force: true });
+    await proxy.close();
+    await srv.close();
+  }
+});
+
 test('download：HTTP 404 不重试直接抛错', async () => {
   const srv = await startServer((_req, res) => { res.writeHead(404); res.end(); });
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'dspack-dl-'));
@@ -68,5 +132,50 @@ test('download：HTTP 404 不重试直接抛错', async () => {
   } finally {
     await fsp.rm(dir, { recursive: true, force: true });
     await srv.close();
+  }
+});
+
+test('resolvePnpmEntry：env 覆盖优先', () => {
+  assert.equal(
+    resolvePnpmEntry({ env: { DSH_DESKTOP_PNPM_ENTRY: '/x/pnpm.mjs' }, resourcesPath: '/res' }),
+    '/x/pnpm.mjs',
+  );
+});
+
+test('resolvePnpmEntry：resourcesPath 标准布局', () => {
+  assert.equal(
+    resolvePnpmEntry({ env: {}, resourcesPath: '/res' }),
+    path.join('/res', 'runtime', 'pnpm', 'bin', 'pnpm.mjs'),
+  );
+});
+
+test('resolvePnpmEntry：两者皆无 → null（回退 PATH）', () => {
+  assert.equal(resolvePnpmEntry({ env: {}, resourcesPath: undefined }), null);
+});
+
+test('pnpm：复用 DSH 自带运行时（ELECTRON_RUN_AS_NODE=1 + 代理透传）', async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'dspack-pnpm-'));
+  const prev = process.env.DSH_DESKTOP_PNPM_ENTRY;
+  try {
+    const entry = path.join(dir, 'fake-pnpm.mjs');
+    await fsp.writeFile(entry, 'console.log(JSON.stringify({ argv: process.argv.slice(2), runAsNode: process.env.ELECTRON_RUN_AS_NODE ?? null, httpsProxy: process.env.HTTPS_PROXY ?? null }));');
+    process.env.DSH_DESKTOP_PNPM_ENTRY = entry;
+    host.setProxy('http://127.0.0.1:9');
+
+    let out = '';
+    const r = await host.pnpm(['install', '--frozen-lockfile'], {
+      cwd: dir,
+      onOutput: (chunk) => { out += chunk; },
+    });
+    assert.equal(r.status, 0);
+    assert.equal(r.error, undefined);
+    const parsed = JSON.parse(out.trim());
+    assert.deepEqual(parsed.argv, ['install', '--frozen-lockfile']);
+    assert.equal(parsed.runAsNode, '1');
+    assert.equal(parsed.httpsProxy, 'http://127.0.0.1:9');
+  } finally {
+    if (prev === undefined) delete process.env.DSH_DESKTOP_PNPM_ENTRY; else process.env.DSH_DESKTOP_PNPM_ENTRY = prev;
+    host.setProxy(null);
+    await fsp.rm(dir, { recursive: true, force: true });
   }
 });

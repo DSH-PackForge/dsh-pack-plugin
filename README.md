@@ -6,7 +6,7 @@ DSH 整合包（`.dspack`）的**纯方案 B 插件 bundle**：一个自包含�
 
 - **零官方源码改动**：不改 `apps/desktop` / `apps/desktop-host`。
 - **零第三方插件**：只依赖 DSH 出厂运行时服务（`ctx.connection` / `ctx.webServer` / `ctx.slots` / `ctx.locale` / `ctx.profileContext`）。
-- **自包含**：运行时依赖仅 `fflate`（ZIP），其余全部 vendor 进仓库（`src/core/`、`src/host-node.js`），不依赖 `@dsh-packforge/*` 引擎包。
+- **自包含**：运行时依赖仅 `fflate`（ZIP）+ `proxy-agent`（下载代理），其余全部 vendor 进仓库（`src/core/`、`src/host-node.js`），不依赖 `@dsh-packforge/*` 引擎包。
 - **加载方式**：官方 bundle 机制——`cordis.patch.yml` 插入 host 插件，`dsh.client` 注入 client 插件。
 
 完整设计见 [dsh-packforge-app/docs/dsh-pack-方案.zh.md](../dsh-packforge-app/docs/dsh-pack-方案.zh.md)；格式契约见 [specs/](../DSH-PackForge/specs/)。
@@ -19,6 +19,7 @@ DSH 整合包（`.dspack`）的**纯方案 B 插件 bundle**：一个自包含�
 - **home 级 skills / .agent-presets 隔离**：per-profile 槽位（junction），换 profile 时一并换指（见下文）。
 - **市场浏览**：`index.json` 精简指针 + `packs/<owner>.<repo>/` 懒加载完整清单 / README。
 - **工作区配置 `.dshpkcfg`**：每个 profile 一份，保存 / 读取 / 自动回填。
+- **下载代理**：About 页可配代理地址（存 `config.proxy`，覆盖一切）；未配时依次回落环境变量（`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`）与 Windows 系统代理（含 `ProxyOverride` 旁路）。支持 http / https / socks / socks5，市场索引 / 包详情 / `.dspack` 安装 / npm 拉取统一生效。
 - **任务中心**：`install` / `export` / `create` 非阻塞执行，设置面板内嵌视图显示阶段时间线与进程输出。
 
 ## 架构

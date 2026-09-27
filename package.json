@@ -62,7 +62,9 @@
     "prepack": "npm run bundle && npm test"
   },
   "dependencies": {
-    "fflate": "^0.8.2"
+    "fflate": "^0.8.2",
+    "proxy-agent": "^8.0.2",
+    "proxy-from-env": "^2.1.0"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"

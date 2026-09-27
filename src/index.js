@@ -7,6 +7,8 @@
 //   - ctx.profileContext 直接给出 home/当前 profile 事实（零猜路径）。
 import { resolveRuntime } from './runtime.js';
 import { registerRpc } from './rpc.js';
+import { getHost } from './host.js';
+import { readState } from './profiles.js';
 
 export const name = 'dspack-host';
 
@@ -16,4 +18,11 @@ export function apply(ctx) {
   // UI ↔ 后端直连 RPC（设置面板按钮走这里，静默、不进聊天栏）。
   const runtime = resolveRuntime(ctx);
   registerRpc(ctx, runtime);
+  // 启动时把已存配置里的代理地址应用到 NodeHost（设置项覆盖环境变量）；读不到/异常不阻塞启动。
+  void (async () => {
+    try {
+      const state = await readState(runtime.home);
+      getHost().setProxy(state?.config?.proxy);
+    } catch { /* 忽略 */ }
+  })();
 }

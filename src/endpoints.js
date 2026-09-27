@@ -88,6 +88,7 @@ export const ENDPOINTS = {
     const s = await readState(runtime.home);
     s.config = { ...(s.config ?? {}), ...(payload ?? {}) };
     await writeState(runtime.home, s);
+    getHost().setProxy(s.config.proxy); // 代理立即生效，无需重启
     return s.config;
   },
 

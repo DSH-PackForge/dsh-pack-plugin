@@ -123,6 +123,14 @@ const dict = {
     'about.ecosystem.spec': '理念及规范',
     'about.ecosystem.app': '包管理器',
     'about.ecosystem.market': '市场',
+    'group.network': '网络',
+    'field.proxyMode': '代理模式',
+    'proxyMode.auto': '自动（跟随系统代理）',
+    'proxyMode.direct': '直连（不使用代理）',
+    'proxyMode.manual': '手动指定代理',
+    'field.proxy': '代理地址',
+    'hint.proxy': '自动模式回落环境变量（HTTP_PROXY / HTTPS_PROXY / ALL_PROXY / NO_PROXY）与 Windows 系统代理；手动支持 http / https / socks / socks5，如 http://127.0.0.1:7890',
+    'result.proxySaved': '已保存代理设置（立即生效）',
     'about.copyright': '© 2026 DSH-PackForge contributors · MIT License',
   },
   en: {
@@ -206,6 +214,14 @@ const dict = {
     'about.ecosystem.spec': 'Philosophy & Spec',
     'about.ecosystem.app': 'Package Manager',
     'about.ecosystem.market': 'Market',
+    'group.network': 'Network',
+    'field.proxyMode': 'Proxy mode',
+    'proxyMode.auto': 'Auto (follow system proxy)',
+    'proxyMode.direct': 'Direct (no proxy)',
+    'proxyMode.manual': 'Manual proxy',
+    'field.proxy': 'Proxy',
+    'hint.proxy': 'Auto mode falls back to env vars (HTTP_PROXY / HTTPS_PROXY / ALL_PROXY / NO_PROXY) and the Windows system proxy; manual supports http / https / socks / socks5, e.g. http://127.0.0.1:7890',
+    'result.proxySaved': 'Proxy saved (takes effect immediately)',
     'about.copyright': '© 2026 DSH-PackForge contributors · MIT License',
   },
 };
@@ -268,6 +284,8 @@ export function DspackSection({ t, packforge }) {
   const [tasksOpen, setTasksOpen] = useState(false); // 任务中心面板是否展开（内嵌视图，替代旧版独立小窗）
   const [taskList, setTaskList] = useState([]); // task/list 轮询结果
   const [update, setUpdate] = useState(null); // null | {checking:true} | {current,latest,outdated,npmUrl} | {error}
+  const [proxy, setProxy] = useState(''); // 代理地址（config.proxy；空 = 回落环境变量）
+  const [proxyMode, setProxyMode] = useState('auto'); // auto | direct | manual
 
   const call = async (endpoint, payload) => {
     if (!rpc) return { ok: false, error: t('result.noRpc') };
@@ -305,6 +323,19 @@ export function DspackSection({ t, packforge }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { void refresh(); }, []);
 
+  // 挂载时读一次已存代理设置回填（保存后 host 立即生效，无需重启）。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    void (async () => {
+      const r = await call('config/get', {});
+      if (!r.ok) return;
+      const v = r.value?.proxy ?? '';
+      if (v === 'direct') { setProxyMode('direct'); setProxy(''); }
+      else if (v) { setProxyMode('manual'); setProxy(v); }
+      else { setProxyMode('auto'); setProxy(''); }
+    })();
+  }, []);
+
   const active = profiles.find((p) => p.active) ?? null;
 
   const showOk = (text) => setResult({ ok: true, text });
@@ -321,6 +352,14 @@ export function DspackSection({ t, packforge }) {
     const r = await call('plugin/check-update', {});
     if (!r.ok) setUpdate({ error: r.error });
     else setUpdate(r.value);
+  };
+
+  // About 页：保存代理设置（config/set 里 host 会立即 setProxy，无需重启）。
+  const doSaveProxy = async () => {
+    const value = proxyMode === 'direct' ? 'direct' : proxyMode === 'manual' ? proxy.trim() : '';
+    const r = await call('config/set', { proxy: value });
+    if (!r.ok) return showErr(r.error);
+    showOk(t('result.proxySaved'));
   };
 
   // 点击「切换」先做只读预检，弹确认窗；用户点「确认切换」才真正调 profile/switch。
@@ -789,6 +828,36 @@ export function DspackSection({ t, packforge }) {
         h('button', { type: 'button', style: style.btn, onClick: () => doCheckUpdate() }, t('about.checkUpdate')),
       ),
       updateLine,
+      // —— 网络（代理设置：覆盖环境变量，保存即生效）——
+      h('div', { style: { ...style.group, width: '100%', maxWidth: 440, paddingTop: 14, borderTop: '1px solid var(--dsw-alias-border-l2)' } },
+        h('p', { style: style.groupTitle }, t('group.network')),
+        h('div', { style: style.field },
+          h('span', { style: style.fieldLabel }, t('field.proxyMode')),
+          h('div', { style: style.row },
+            ['auto', 'direct', 'manual'].map((m) =>
+              h('button', {
+                key: m, type: 'button',
+                style: proxyMode === m ? { ...style.tab, ...style.tabActive } : style.tab,
+                onClick: () => setProxyMode(m),
+              }, t('proxyMode.' + m)),
+            ),
+          ),
+        ),
+        proxyMode === 'manual'
+          ? h('label', { style: style.field },
+              h('span', { style: style.fieldLabel }, t('field.proxy')),
+              h('input', {
+                style: style.input, value: proxy,
+                placeholder: 'http://127.0.0.1:7890',
+                onInput: (e) => setProxy(e.target.value),
+              }),
+            )
+          : null,
+        h('p', { style: style.hint }, t('hint.proxy')),
+        h('div', { style: style.row },
+          h('button', { type: 'button', style: style.btn, disabled: !rpc, onClick: doSaveProxy }, t('action.save')),
+        ),
+      ),
       h('div', { style: { ...style.row, justifyContent: 'center' } },
         h('button', { type: 'button', style: style.btnSmall, onClick: () => openUrl(AUTHOR_URL) }, `${t('about.author')} ${AUTHOR}`),
         h('button', { type: 'button', style: style.btnSmall, onClick: () => openUrl(REPO_URL) }, t('about.repo')),
