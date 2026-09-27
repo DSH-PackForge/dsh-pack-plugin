@@ -120,6 +120,16 @@ test('download：setProxy("direct") 覆盖显式代理，强制直连', async ()
   }
 });
 
+test('proxyStatus：描述走哪个代理 / 还是直连', () => {
+  host.setProxy('http://127.0.0.1:7890');
+  assert.deepEqual(host.proxyStatus(), { kind: 'manual', url: 'http://127.0.0.1:7890' });
+
+  host.setProxy('direct');
+  assert.deepEqual(host.proxyStatus(), { kind: 'direct', url: null });
+
+  host.setProxy(null);
+});
+
 test('download：HTTP 404 不重试直接抛错', async () => {
   const srv = await startServer((_req, res) => { res.writeHead(404); res.end(); });
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'dspack-dl-'));
@@ -153,7 +163,7 @@ test('resolvePnpmEntry：两者皆无 → null（回退 PATH）', () => {
   assert.equal(resolvePnpmEntry({ env: {}, resourcesPath: undefined }), null);
 });
 
-test('pnpm：复用 DSH 自带运行时（ELECTRON_RUN_AS_NODE=1 + 代理透传）', async () => {
+test('pnpm：复用 DSH 自带运行时（ELECTRON_RUN_AS_NODE=1 + 代理透传 + 日志标注层级）', async () => {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'dspack-pnpm-'));
   const prev = process.env.DSH_DESKTOP_PNPM_ENTRY;
   try {
@@ -169,7 +179,10 @@ test('pnpm：复用 DSH 自带运行时（ELECTRON_RUN_AS_NODE=1 + 代理透传�
     });
     assert.equal(r.status, 0);
     assert.equal(r.error, undefined);
-    const parsed = JSON.parse(out.trim());
+    const lines = out.trim().split('\n');
+    assert.equal(lines.length, 2);
+    assert.match(lines[0], /DSH_DESKTOP_PNPM_ENTRY/); // 日志首行标出用了哪一级
+    const parsed = JSON.parse(lines[1]);
     assert.deepEqual(parsed.argv, ['install', '--frozen-lockfile']);
     assert.equal(parsed.runAsNode, '1');
     assert.equal(parsed.httpsProxy, 'http://127.0.0.1:9');
@@ -177,5 +190,18 @@ test('pnpm：复用 DSH 自带运行时（ELECTRON_RUN_AS_NODE=1 + 代理透传�
     if (prev === undefined) delete process.env.DSH_DESKTOP_PNPM_ENTRY; else process.env.DSH_DESKTOP_PNPM_ENTRY = prev;
     host.setProxy(null);
     await fsp.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('pnpm：无自带运行时 → 日志标注 PATH 回退', async () => {
+  const prev = process.env.DSH_DESKTOP_PNPM_ENTRY;
+  if (prev !== undefined) delete process.env.DSH_DESKTOP_PNPM_ENTRY;
+  try {
+    let out = '';
+    // 本机无论是否装了 pnpm，日志都应先标出「使用 PATH 上的 pnpm」（不断言退出结果）。
+    await host.pnpm(['--version'], { onOutput: (chunk) => { out += chunk; } });
+    assert.match(out, /使用 PATH 上的 pnpm/);
+  } finally {
+    if (prev !== undefined) process.env.DSH_DESKTOP_PNPM_ENTRY = prev;
   }
 });

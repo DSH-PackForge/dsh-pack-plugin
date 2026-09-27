@@ -169,6 +169,8 @@ export class NodeHost {
     // 显式代理/'direct' 对两条路径一致生效：先构造一次带代理的基准 env，再各自补充。
     const baseEnv = { ...process.env };
     this.#applyProxyEnv(baseEnv);
+    // 安装日志里写清「用了哪一级」：环境变量指定入口 / DSH 自带运行时 / PATH 回退。
+    const emit = (s) => { if (typeof opts.onOutput === 'function') opts.onOutput(String(s) + '\n'); };
     const runPathPnpm = () => this.#spawnRun('pnpm', args, {
       cwd: opts.cwd,
       timeoutMs: opts.timeoutMs,
@@ -178,7 +180,9 @@ export class NodeHost {
     });
 
     const entry = resolvePnpmEntry();
+    const overridden = typeof process.env.DSH_DESKTOP_PNPM_ENTRY === 'string' && process.env.DSH_DESKTOP_PNPM_ENTRY.trim() !== '';
     if (entry && fs.existsSync(entry)) {
+      emit(overridden ? '使用 pnpm：DSH_DESKTOP_PNPM_ENTRY 指定入口' : '使用 DSH 自带 pnpm 运行时');
       // process.execPath 即桌面端可执行文件（electron），加 ELECTRON_RUN_AS_NODE=1 让其以纯 node
       // 模式跑 pnpm.mjs——与 DSH 自身 node.cmd 的做法一致；非 Electron（node 直跑）时该变量无害。
       const env = { ...baseEnv, ELECTRON_RUN_AS_NODE: '1' };
@@ -190,9 +194,13 @@ export class NodeHost {
       });
       // 降级：自带运行时「根本没启动起来」（spawn 失败/被替换，status 为 null）才回退 PATH；
       // 超时或 pnpm 已运行但退出码非 0（真实安装失败）则不回退，避免换版本重跑造成二次报错/翻倍等待。
-      if (r.status === null && !r.timedOut) return await runPathPnpm();
+      if (r.status === null && !r.timedOut) {
+        emit('自带运行时启动失败，回退 PATH pnpm');
+        return await runPathPnpm();
+      }
       return r;
     }
+    emit('使用 PATH 上的 pnpm');
     return await runPathPnpm();
   }
 
@@ -267,6 +275,19 @@ export class NodeHost {
     this.#direct = u === 'direct';
     this.#proxyUrl = u && u !== 'direct' ? u : null;
     this.#proxyAgent = null; // 失效缓存
+  }
+
+  /** 描述当前对某 URL 的代理决策（供安装日志展示）。默认以 pnpm 必访问的 registry 为探测目标。 */
+  proxyStatus(target = 'https://registry.npmjs.org/') {
+    if (this.#direct) return { kind: 'direct', url: null };
+    if (this.#proxyUrl) return { kind: 'manual', url: this.#proxyUrl };
+    let u;
+    try { u = new URL(target); } catch { return { kind: 'auto-direct', url: null }; }
+    const envProxy = getProxyForUrl(u);
+    if (envProxy) return { kind: 'auto-env', url: envProxy };
+    const sys = this.#sysProxyFor(u);
+    if (sys) return { kind: 'auto-system', url: sys };
+    return { kind: 'auto-direct', url: null };
   }
 
   async download(url, destAbs) {

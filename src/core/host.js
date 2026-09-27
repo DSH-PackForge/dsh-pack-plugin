@@ -117,6 +117,16 @@ export class Host {
     throw new Error('Host.download 未实现');
   }
 
+  /**
+   * 描述当前代理来源（可选能力，供安装日志展示「走了哪个代理 / 还是直连」）。
+   * 返回 `{ kind, url }`，kind ∈ 'manual'（手动配置）| 'direct'（用户强制直连）|
+   * 'auto-env'（环境变量）| 'auto-system'（系统代理）| 'auto-direct'（自动但未检测到代理）；
+   * 默认返回 null（宿主不提供该信息，core 侧跳过该行日志）。
+   */
+  proxyStatus(_target) {
+    return null;
+  }
+
   /** 移动/重命名文件（跨目录），自动建目标父目录。 */
   async move(_from, _to) {
     throw new Error('Host.move 未实现');

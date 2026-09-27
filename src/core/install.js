@@ -31,6 +31,10 @@ export async function installPack(host, opts = {}) {
   // 行式日志回调（任务中心 logSink）：落盘细节逐文件 print。
   const log = makeLog(opts.onOutput);
 
+  // 第一条日志先写清「走了哪个代理 / 还是直连」，便于定位网络问题。
+  const proxy = proxyLine(host);
+  if (proxy) log(proxy);
+
   const profilesRoot = opts.profilesRoot || host.joinPath(host.homedir(), '.dsh', 'profiles');
 
   progress('download', typeof source === 'string' && /^https?:\/\//i.test(source) ? '下载整合包' : '读取整合包');
@@ -418,6 +422,21 @@ export async function reconcileProfile(host, profileDir, manifest) {
 }
 
 /* ------------------- 工具 ------------------- */
+
+/** 把 host.proxyStatus() 转成一条日志行；宿主不支持或无信息时返回 null。 */
+function proxyLine(host) {
+  if (typeof host.proxyStatus !== 'function') return null;
+  const ps = host.proxyStatus();
+  if (!ps) return null;
+  switch (ps.kind) {
+    case 'manual': return `代理：手动配置 ${ps.url}`;
+    case 'direct': return '代理：直连（用户已禁用代理）';
+    case 'auto-env': return `代理：环境变量 ${ps.url}`;
+    case 'auto-system': return `代理：系统代理 ${ps.url}`;
+    case 'auto-direct': return '代理：直连（未检测到代理）';
+    default: return null;
+  }
+}
 
 /** 把 onOutput（任务中心 logSink）转成行式日志回调；无 sink 时为空操作。 */
 function makeLog(onOutput) {
