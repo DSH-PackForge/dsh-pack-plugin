@@ -23,7 +23,7 @@ import { untar } from './core/tar.js';
 const MANAGER = '@dsh-packforge/dsh-pack-plugin';
 // host 运行时依赖，按「顶层 node_modules」搬（与 pnpm 的提升布局一致）。
 const MANAGER_DEPS = ['fflate'];
-const FALLBACK_SPECS = { [MANAGER]: '^0.1.0', fflate: '^0.8.2' };
+const FALLBACK_SPECS = { [MANAGER]: '^0.2.0', fflate: '^0.8.2' };
 const NPM_REGISTRY = 'https://registry.npmjs.org';
 
 async function exists(p) {

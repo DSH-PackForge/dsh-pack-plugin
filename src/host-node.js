@@ -414,7 +414,7 @@ export class NodeHost {
       }
       const lib = u.protocol === 'https:' ? https : u.protocol === 'http:' ? http : null;
       if (!lib) return reject(new Error(`仅支持 http/https：${url}`));
-      const options = { headers: { 'user-agent': 'dspack/0.1.0' } };
+      const options = { headers: { 'user-agent': 'dspack/0.2.0' } };
       if (extraCa) options.ca = extraCa;
       const agent = this.#agentFor(u);
       if (agent) options.agent = agent;
