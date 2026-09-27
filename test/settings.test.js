@@ -4,13 +4,23 @@ import React, { Fragment } from 'react';
 import { registerSettingsSection, DspackSection } from '../src/settings.js';
 import { PROFILE_NAME_RE, RESERVED_PROFILE_NAMES } from '../src/channel.js';
 
-/** mock DSH client slots 服务。 */
+/** mock DSH client slots 服务。
+ *  `inject` 模拟 DSH 真实行为：slot 声明就绪时 reconcile 立即执行回调（触发闸门
+ *  available → register）。`register` 记录实参并返回 disposer。 */
 function makeSlots() {
   const injected = {};
+  const registered = [];
   return {
     injected,
-    inject(name, factory) { injected[name] = factory; },
-    register(options, Component) { return { options, Component }; },
+    registered,
+    inject(name, factory) {
+      injected[name] = factory;
+      factory();
+    },
+    register(options, Component) {
+      registered.push({ options, Component });
+      return () => {};
+    },
   };
 }
 
@@ -35,7 +45,12 @@ test('registerSettingsSection：注册 settings.section（id/order/label + React
   const factory = slots.injected['settings.section'];
   assert.equal(typeof factory, 'function');
 
-  const { options, Component } = factory();
+  // 闸门幂等：inject 回调被重复触发（重载时 slot 重新声明）也不应二次 register。
+  factory();
+  factory();
+  assert.equal(slots.registered.length, 1);
+
+  const { options, Component } = slots.registered[0];
   assert.equal(options.name, 'settings.section');
   assert.equal(options.id, 'dspack');
   assert.equal(options.order, 20);
@@ -62,6 +77,7 @@ test('registerSettingsSection：无 ctx.effect 时仍能注册', () => {
   const ctx = { slots, locale }; // 无 effect
   assert.equal(registerSettingsSection(ctx, { api: {}, capabilities: {}, host: null }), true);
   assert.equal(typeof slots.injected['settings.section'], 'function');
+  assert.equal(slots.registered.length, 1);
 });
 
 /** 最小 hooks 派发器：直接渲染函数组件（不引入 react-dom / test-renderer）。

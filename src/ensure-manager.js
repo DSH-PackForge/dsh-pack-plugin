@@ -6,12 +6,14 @@
 //
 // 安装来源两种：
 //   - npm（切换默认）：从 registry 拉最新版 tarball 解包（只落这一个包，不碰目标其它依赖）。
-//   - copy：从当前激活 profile 复制管理器 + 顶层 fflate，离线、快。
+//   - copy：从当前激活 profile 复制管理器本体，离线、快。
 // 拉取最新失败（未发布 / 网络不通）时次之回退 copy —— 管理器只在自己 profile 里运行，来源必有，
 // 离线也能迁装，不让切换硬失败。
 //
-// 注意 host 运行时依赖 fflate（dspack 的 zip 逻辑），pnpm 会把它提升到 profile 顶层
-// node_modules（不是在插件目录里），因此迁移必须连带搬到目标顶层，否则 ESM 解析不到。
+// 管理器是自包含 bundle（host 侧已由 scripts/bundle-host.mjs 用 esbuild 内联
+// fflate / proxy-agent / proxy-from-env 及其传递依赖），迁装只需搬管理器目录本身，
+// 无需再手工同步任何「顶层 node_modules 依赖清单」——那正是 f91f375 引入 proxy-agent 后
+// 清单漏更、导致切换后 failed to import 的根因。
 
 import fsp from 'node:fs/promises';
 import os from 'node:os';
@@ -21,9 +23,7 @@ import { getHost } from './host.js';
 import { untar } from './core/tar.js';
 
 const MANAGER = '@dsh-packforge/dsh-pack-plugin';
-// host 运行时依赖，按「顶层 node_modules」搬（与 pnpm 的提升布局一致）。
-const MANAGER_DEPS = ['fflate'];
-const FALLBACK_SPECS = { [MANAGER]: '^0.2.0', fflate: '^0.8.2' };
+const FALLBACK_SPECS = { [MANAGER]: '^0.2.0' };
 const NPM_REGISTRY = 'https://registry.npmjs.org';
 
 async function exists(p) {
@@ -76,7 +76,7 @@ export async function ensureManagerInProfile(runtime, target, { source = 'copy' 
   let used = source;
   if (source === 'npm') {
     try {
-      spec = await npmPullManager(runtime, targetDir, sourceDir);
+      spec = await npmPullManager(runtime, targetDir);
     } catch {
       spec = await copyManager(sourceDir, targetDir, target);
       used = 'copy';
@@ -99,7 +99,7 @@ export async function ensureManagerInProfile(runtime, target, { source = 'copy' 
   return { installed: true, spec, source: used };
 }
 
-/** 来源 profile 复制（离线）：管理器本体 + 被 pnpm 提升到顶层的运行时依赖。 */
+/** 来源 profile 复制（离线）：管理器本体（自包含 bundle，零外部依赖）。 */
 async function copyManager(sourceDir, targetDir, target) {
   const sourceManager = managerDir(sourceDir);
   if (!(await exists(path.join(sourceManager, 'package.json')))) {
@@ -110,12 +110,11 @@ async function copyManager(sourceDir, targetDir, target) {
 
   await fsp.mkdir(path.dirname(managerDir(targetDir)), { recursive: true });
   await fsp.cp(sourceManager, managerDir(targetDir), { recursive: true, force: true });
-  await copyHoistedDeps(sourceDir, targetDir);
   return spec;
 }
 
-/** 从 NPM registry 拉最新版：解析元数据 → 下载 tarball → 解包到目标 → 复制 fflate。 */
-async function npmPullManager(runtime, targetDir, sourceDir) {
+/** 从 NPM registry 拉最新版：解析元数据 → 下载 tarball → 解包到目标（自包含，不读来源 profile）。 */
+async function npmPullManager(runtime, targetDir) {
   const host = getHost();
   const esc = MANAGER.replace('/', '%2F');
   const metaUrl = `${NPM_REGISTRY}/${esc}/latest`;
@@ -150,20 +149,9 @@ async function npmPullManager(runtime, targetDir, sourceDir) {
     }
     if (written === 0) throw new Error(`${MANAGER} 的 NPM 包内容为空`);
 
-    await copyHoistedDeps(sourceDir, targetDir);
     return `^${version}`;
   } finally {
     await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
-  }
-}
-
-/** 复制被 pnpm 提升到顶层的运行时依赖（fflate）。 */
-async function copyHoistedDeps(sourceDir, targetDir) {
-  await fsp.mkdir(path.join(targetDir, 'node_modules'), { recursive: true });
-  for (const dep of MANAGER_DEPS) {
-    const src = path.join(sourceDir, 'node_modules', dep);
-    if (!(await exists(src))) continue;
-    await fsp.cp(src, path.join(targetDir, 'node_modules', dep), { recursive: true, force: true });
   }
 }
 

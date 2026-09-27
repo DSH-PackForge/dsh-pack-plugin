@@ -30,9 +30,8 @@ function makeSendToChat(ctx) {
     return null;
   }
   return async (text) => {
-    const created = await sessions.create({});
-    if (!created?.ok) throw new Error(created?.error?.message ?? '创建会话失败');
-    const id = created.value?.sessionId;
+    // sessions.create 成功直接返回 sessionId（字符串），失败抛 SessionCreateError。
+    const id = await sessions.create({});
     if (!id) throw new Error('创建会话未返回 sessionId');
     uiWorkspace.openSession(id);
     await sessions.using(id, { source: 'dspack' }, async () => {

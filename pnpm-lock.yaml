@@ -7,7 +7,10 @@ settings:
 importers:
 
   .:
-    dependencies:
+    devDependencies:
+      esbuild:
+        specifier: ^0.25.0
+        version: 0.25.12
       fflate:
         specifier: ^0.8.2
         version: 0.8.3
@@ -17,10 +20,6 @@ importers:
       proxy-from-env:
         specifier: ^2.1.0
         version: 2.1.0
-    devDependencies:
-      esbuild:
-        specifier: ^0.25.0
-        version: 0.25.12
 
 packages:
 

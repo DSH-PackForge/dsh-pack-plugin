@@ -7,6 +7,8 @@
 //   ctx.slots.inject("settings.section", () => ctx.slots.register(options, Component))
 import { createElement as h, useState, useEffect, Fragment } from 'react';
 import { PROFILE_NAME_RE, RESERVED_PROFILE_NAMES } from './channel.js';
+import { installSettingsNavIcon, navIconMaskSvg, navIconMaskUrl } from './settings-nav-icon.js';
+import { createSectionGate } from './section-gate.js';
 
 const NS = 'dspack';
 const MANAGER_PKG = '@dsh-packforge/dsh-pack-plugin';
@@ -313,15 +315,29 @@ export function registerSettingsSection(ctx, packforge = {}) {
   if (!locale || typeof locale.register !== 'function' || typeof locale.bind !== 'function') return false;
 
   const registerLocale = () => {
-    locale.register(NS, dict);
+    try {
+      locale.register(NS, dict);
+    } catch (e) {
+      // DSH locale 服务全局去重：同一 namespace+locale 重复注册抛错，且旧注册不随
+      // 插件 fiber 卸载清理。热重载（关→开）时 dict 内容不变，重复注册安全忽略；
+      // 其余错误照抛，避免掩盖真正的注册失败。
+      if (/already has locale/.test(String(e?.message ?? e))) return;
+      throw e;
+    }
   };
   if (typeof ctx.effect === 'function') ctx.effect(registerLocale, 'dspack: settings dict');
   else registerLocale();
 
   const t = locale.bind(NS);
 
-  slots.inject('settings.section', () =>
-    slots.register(
+  // 导航 tab 图标：settings.section 契约没有 icon 字段，shell 对未知 id 一律
+  // 回退齿轮；这里在对话框挂载后把属于本插件的那一行换成 logo（folder-zip）。
+  installSettingsNavIcon(ctx, () => t('nav'), navIconMaskUrl(navIconMaskSvg(LOGO_PATH)));
+
+  // 经 section-gate 注册：register 幂等、disposer 显式持有，热重载时不二次 register，
+  // 从而避免命中 SlotCore 的重复 id 校验（dsh-market 同款做法，实测重载不丢入口）。
+  const sectionGate = createSectionGate(() => {
+    const off = slots.register(
       {
         name: 'settings.section',
         id: 'dspack',
@@ -331,8 +347,15 @@ export function registerSettingsSection(ctx, packforge = {}) {
         inject: () => ({ t, packforge }),
       },
       DspackSection,
-    ),
-  );
+    );
+    // slots.register 在不支持 disposer 的宿主上可能返回 undefined；闸门需要一个恒有的
+    // disposer，缺省退化为 no-op，避免变成无法撤销的注册。
+    return typeof off === 'function' ? off : () => {};
+  });
+
+  slots.inject('settings.section', () => {
+    sectionGate.available();
+  });
   return true;
 }
 

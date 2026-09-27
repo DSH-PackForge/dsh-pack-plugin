@@ -396,15 +396,31 @@ async function mountDialectDeps(host, target, deps, plan, log) {
 
 /* ------------------------------------------------------------------ */
 
+/**
+ * 归一化用户粘贴的路径/URL：去首尾空白 + 去掉包裹的成对引号。
+ * Windows「复制路径」（资源管理器 / 属性）会给带空格或中文的路径套一对双引号；
+ * 不剥掉的话，`path.resolve` 会把 `"C:\…\x.dspack"` 当成相对路径拼到 cwd 后面，
+ * 得到 `cwd\"C:\…\x.dspack"` 这种错得离谱的「找不到整合包文件」。
+ */
+function normalizeSource(source) {
+  const trimmed = String(source ?? '').trim();
+  const quote = trimmed[0];
+  if ((quote === '"' || quote === "'") && trimmed.length >= 2 && trimmed.endsWith(quote)) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
 /** 把「本地路径 | http(s) URL」统一解析为本地文件路径；URL 会下载到临时目录（调用方负责清理返回的 tempDir）。 */
 export async function resolvePackSource(host, source) {
-  if (/^https?:\/\//i.test(source)) {
+  const normalized = normalizeSource(source);
+  if (/^https?:\/\//i.test(normalized)) {
     const tempDir = await host.mkdtemp('dspack-dl-');
     const dest = host.joinPath(tempDir, 'pack.dspack');
-    await host.download(source, dest);
+    await host.download(normalized, dest);
     return { path: dest, tempDir };
   }
-  const local = host.resolvePath(source);
+  const local = host.resolvePath(normalized);
   const st = await host.stat(local);
   if (!st?.isFile) throw new Error(`找不到整合包文件：${local}`);
   return { path: local, tempDir: null };

@@ -48,14 +48,13 @@ test('untar：解出 package/ 下文件', () => {
   assert.equal(new TextDecoder().decode(out['package/src/index.js']), 'export {}');
 });
 
-test('ensureManagerInProfile source=npm：从 registry 拉最新，登记 ^version + 复制 fflate', async () => {
+test('ensureManagerInProfile source=npm：从 registry 拉最新，登记 ^version（自包含，不碰来源）', async () => {
   const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'dsh-pack-npm-'));
   const profilesDir = path.join(home, 'profiles');
   try {
-    // 来源（desktop）：只放 fflate（npm 路径只需从来源补顶层依赖，不读来源管理器）。
+    // 来源（desktop）：npm 路径自包含，完全不读来源 profile，给个最小目录即可。
     const src = path.join(profilesDir, 'desktop');
-    await fsp.mkdir(path.join(src, 'node_modules', 'fflate'), { recursive: true });
-    await fsp.writeFile(path.join(src, 'node_modules', 'fflate', 'package.json'), JSON.stringify({ name: 'fflate', version: '0.8.2' }));
+    await fsp.mkdir(src, { recursive: true });
     await fsp.writeFile(path.join(src, 'package.json'), JSON.stringify({ name: 'dsh-profile-desktop', dependencies: {}, dsh: { profile: { bundles: [MANAGER] } } }, null, 2));
     // 目标：缺管理器的最小 profile。
     const target = path.join(profilesDir, 'newpack');
@@ -90,7 +89,6 @@ test('ensureManagerInProfile source=npm：从 registry 拉最新，登记 ^versi
 
     const mgrPkg = JSON.parse(await fsp.readFile(path.join(target, 'node_modules', ...MANAGER.split('/'), 'package.json'), 'utf8'));
     assert.equal(mgrPkg.version, '9.9.9');
-    assert.ok(await fsp.stat(path.join(target, 'node_modules', 'fflate', 'package.json')).then(() => true, () => false));
   } finally {
     await fsp.rm(home, { recursive: true, force: true });
   }
@@ -100,13 +98,11 @@ test('ensureManagerInProfile source=npm：拉取最新失败 → 次之回退复
   const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'dsh-pack-npm-fb-'));
   const profilesDir = path.join(home, 'profiles');
   try {
-    // 来源（desktop）：装上管理器（copy 回退的来源）+ fflate。
+    // 来源（desktop）：装上管理器（copy 回退的来源，自包含 bundle）。
     const src = path.join(profilesDir, 'desktop');
     const mgrDir = path.join(src, 'node_modules', ...MANAGER.split('/'));
     await fsp.mkdir(mgrDir, { recursive: true });
     await fsp.writeFile(path.join(mgrDir, 'package.json'), JSON.stringify({ name: MANAGER, version: '0.1.0' }));
-    await fsp.mkdir(path.join(src, 'node_modules', 'fflate'), { recursive: true });
-    await fsp.writeFile(path.join(src, 'node_modules', 'fflate', 'package.json'), JSON.stringify({ name: 'fflate', version: '0.8.2' }));
     await fsp.writeFile(path.join(src, 'package.json'), JSON.stringify({ name: 'dsh-profile-desktop', dependencies: { [MANAGER]: '^0.1.0' }, dsh: { profile: { bundles: [MANAGER] } } }, null, 2));
     // 目标：缺管理器的最小 profile。
     const target = path.join(profilesDir, 'newpack');
@@ -129,7 +125,6 @@ test('ensureManagerInProfile source=npm：拉取最新失败 → 次之回退复
     assert.equal(pkg.dependencies[MANAGER], '^0.1.0');
     const mgrPkg = JSON.parse(await fsp.readFile(path.join(target, 'node_modules', ...MANAGER.split('/'), 'package.json'), 'utf8'));
     assert.equal(mgrPkg.version, '0.1.0');
-    assert.ok(await fsp.stat(path.join(target, 'node_modules', 'fflate', 'package.json')).then(() => true, () => false));
   } finally {
     await fsp.rm(home, { recursive: true, force: true });
   }

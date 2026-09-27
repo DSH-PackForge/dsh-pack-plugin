@@ -32,12 +32,21 @@ function parseSkill(raw) {
 }
 
 function loadSkill(url) {
-  const { data, content } = parseSkill(readFileSync(url, 'utf8'));
-  // ★ DSH 原生没有散文「触发词」字段；上游的 invocation 散文并进 whenToUse，否则会被丢掉。
-  const whenToUse = data.invocation
-    ? `${data.whenToUse ?? ''} 触发词：${data.invocation}`.trim()
-    : data.whenToUse;
-  return { name: data.name, description: data.description, whenToUse, content };
+  // 容错：单个 skill 的 SKILL.md 缺失/半写/损坏只降级为「跳过该 skill」。
+  // 这里在模块顶层 import 阶段执行，若抛错会被 cordis loader 记为「failed to import」，
+  // 导致整个宿主插件（含 RPC、安装、profile 等与 skill 无关的能力）一起失效——
+  // 例如 .dspack/pnpm 安装中途正在重写插件目录、文件尚未落盘时恰好被宿主 import。
+  // 因此读失败一律吞掉返回 undefined，由下方 filter(Boolean) 跳过，绝不阻塞插件激活。
+  try {
+    const { data, content } = parseSkill(readFileSync(url, 'utf8'));
+    // ★ DSH 原生没有散文「触发词」字段；上游的 invocation 散文并进 whenToUse，否则会被丢掉。
+    const whenToUse = data.invocation
+      ? `${data.whenToUse ?? ''} 触发词：${data.invocation}`.trim()
+      : data.whenToUse;
+    return { name: data.name, description: data.description, whenToUse, content };
+  } catch {
+    return undefined;
+  }
 }
 
 export const publishToGithub = loadSkill(
@@ -45,7 +54,8 @@ export const publishToGithub = loadSkill(
 );
 
 // 未来 DSH-PackForge/skills 新增 skill 时，在此追加即可。
-const SKILLS = [publishToGithub];
+// filter(Boolean)：剔除加载失败的 skill，保证 list()/get() 面对空表也安全。
+const SKILLS = [publishToGithub].filter(Boolean);
 
 export function createDspackSkillProvider() {
   return {
