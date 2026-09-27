@@ -9,10 +9,11 @@ import { resolveRuntime } from './runtime.js';
 import { registerRpc } from './rpc.js';
 import { getHost } from './host.js';
 import { readState } from './profiles.js';
+import { createDspackSkillProvider } from './skills/index.js';
 
 export const name = 'dspack-host';
 
-export const inject = ['connection', 'webServer'];
+export const inject = ['connection', 'webServer', 'skills'];
 
 export function apply(ctx) {
   // UI ↔ 后端直连 RPC（设置面板按钮走这里，静默、不进聊天栏）。
@@ -25,4 +26,10 @@ export function apply(ctx) {
       getHost().setProxy(state?.config?.proxy);
     } catch { /* 忽略 */ }
   })();
+  // 注册自定义 skill 提供者：把 publish-to-github 送进模型 skill catalog（不走磁盘）。
+  // registerProvider 返回 disposer，yield 给 effect 以在插件卸载时反注册。
+  ctx.effect(
+    () => ctx.skills.registerProvider(() => createDspackSkillProvider()),
+    'dspack: skill',
+  );
 }

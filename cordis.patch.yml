@@ -6,4 +6,4 @@
 - insert:
     - id: dspack-host
       name: '@dsh-packforge/dsh-pack-plugin'
-      inject: [connection, webServer]
+      inject: [connection, webServer, skills]
