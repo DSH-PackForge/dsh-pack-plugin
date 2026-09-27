@@ -1,6 +1,10 @@
 // manifest v5 契约（最新目标规范，见 DSH-PackForge/specs/manifest/v5.md）。
 // v5 = v4 全部硬约束（依赖坐标钉死精确版本/commit sha、dshVersion 精确、多语言元数据、files[]）
 //      + type 区分形态："profile"（单包）/ "dshhome"（整机，含 profiles/presets/skills/instructions）。
+//
+// 注意：与 vendored.js 互相 import（本模块需要 lockfilePackageNames 做闭包条目对账放行）。
+// 循环依赖是安全的：双方都只在**运行时函数调用**里使用对方绑定，顶层求值互不依赖。
+import { lockfilePackageNames } from './vendored.js';
 
 const ICON_PATTERN = /^icons?\/.+\.(png|jpe?g|webp|ico|svg)$/i;
 
@@ -23,7 +27,7 @@ export async function buildManifest(host, profile, opts = {}, scan = { files: []
   const icon = opts.icon || findIcon(scan.files) || '';
   const patch = (await host.readTextFile(host.joinPath(profile.dir, 'cordis.patch.yml'))) ?? '';
 
-  return {
+  return applyR2CompatFields({
     manifestVersion: 5,
     type: 'profile',
     name,
@@ -38,7 +42,7 @@ export async function buildManifest(host, profile, opts = {}, scan = { files: []
     dependencies: await coordinatesFromProfileDeps(host, profile.dir, pkg?.dependencies),
     patch,
     files: opts.files ?? [],
-  };
+  }, opts);
 }
 
 /** 从单个 profile 目录生成 ProfileUnit（manifest v5 `profiles` 的值：复用 v4 单 profile 字段，去掉 profileName）。 */
@@ -67,7 +71,7 @@ export async function buildHomeManifest(host, home, opts = {}) {
     profiles[p.name] = await buildProfileUnit(host, p.dir);
   }
   const names = Object.keys(profiles);
-  return {
+  return applyR2CompatFields({
     manifestVersion: 5,
     type: 'dshhome',
     name: sanitizeSlug(opts.name || home.name),
@@ -83,7 +87,25 @@ export async function buildHomeManifest(host, home, opts = {}) {
     skills: opts.skills ?? [],
     instructions: opts.instructions || 'AGENTS.md',
     files: opts.files ?? [],
-  };
+  }, opts);
+}
+
+/**
+ * v5 r2 兼容性可选字段（dshVersions §13 / launchers §14）：仅当 opts 提供有效非空值时写入。
+ * dshVersions 去重去空；launchers 过滤 null/undefined 条目。结构合法性由 validateManifest 把关
+ * （导出侧 packProfile/packHome 在打包前强校验，dshVersion ∉ dshVersions 等错误在导出时报出）。
+ */
+export function applyR2CompatFields(manifest, opts) {
+  if (Array.isArray(opts?.dshVersions)) {
+    const set = [...new Set(opts.dshVersions.map((v) => String(v).trim()).filter(Boolean))];
+    if (set.length) manifest.dshVersions = set;
+  }
+  const launchers = opts?.launchers;
+  if (launchers && typeof launchers === 'object' && !Array.isArray(launchers)) {
+    const entries = Object.entries(launchers).filter(([, v]) => v !== undefined && v !== null);
+    if (entries.length) manifest.launchers = Object.fromEntries(entries);
+  }
+  return manifest;
 }
 
 /** 有序层栈：dsh.profile.bundles 原文顺序，去重，只留字符串。 */
@@ -320,8 +342,10 @@ export function parsePkgGitSpec(spec) {
  * manifest 结构校验（v5：profile 与 dshhome；v4：兼容单 profile），返回错误信息数组（空数组 = 合法）。
  * - v4：type 仅接受 'profile'（'collection' 预留报「暂未支持」）；
  * - v5：type 接受 'profile' 或 'dshhome'（dshhome 校验 profiles / presets / skills / instructions / defaultProfile）。
+ * @param {object} opts { lockText? } 可选的随包 pnpm-lock.yaml 文本——提供时 vendored 闭包条目
+ *   （key = npm 包名，不在 dependencies 中）按 §12 约束 1 的闭包规则放行。
  */
-export function validateManifest(m) {
+export function validateManifest(m, opts = {}) {
   const errors = [];
   if (!m || typeof m !== 'object' || Array.isArray(m)) return ['manifest.json 缺失或不是对象'];
 
@@ -346,10 +370,177 @@ export function validateManifest(m) {
     if (m.type === 'dshhome') errors.push(...validateDshHome(m));
     else if (m.type === undefined || m.type === 'profile') errors.push(...validateProfile(m));
     else errors.push('type 仅支持 "profile" 或 "dshhome"');
+    // v5 r2 可选字段（vendored / dshVersions / launchers）：未声明时全部跳过（前向兼容，
+    // r1 包行为不变）；声明了则做结构校验（未知字段不拒绝——消费者必须忽略不认识的字段）。
+    errors.push(...validateVendored(m, opts.lockText));
+    errors.push(...validateDshVersions(m));
+    errors.push(...validateLaunchers(m));
   } else {
     errors.push(...validateProfile(m));
   }
   return errors;
+}
+
+/* ---------------------------------------------------------------------------
+ * v5 r2 可选字段校验（vendored §12 / dshVersions §13 / launchers §14）
+ * ------------------------------------------------------------------------- */
+
+/** 所有形态的依赖坐标合集（profile：dependencies；dshhome：各 profile 依赖并集）。 */
+function dependencyCoords(m) {
+  if (m.type === 'dshhome') {
+    const set = new Map(); // coord → 版本（同名冲突时先到先得，仅用于一致性检查）
+    for (const u of Object.values(m.profiles ?? {})) {
+      for (const [k, v] of Object.entries(u?.dependencies ?? {})) if (!set.has(k)) set.set(k, v);
+    }
+    return set;
+  }
+  return new Map(Object.entries(m.dependencies ?? {}));
+}
+
+const VENDORED_REASONS = new Set(['upstream-missing', 'unpublished', 'local-modified', 'explicit']);
+export { VENDORED_REASONS };
+
+/**
+ * vendored{}（§12）：条目五字段 + key ∈ dependencies ∪ lockfile packages 对账 + version 一致性。
+ * 闭包条目（key ∈ 随包 pnpm-lock.yaml 的 packages 名集，vendor=full 档传递依赖）：不在
+ * dependencies 中，无钉死版本 → 跳过版本一致性检查（版本基准是 lockfile，见 v5 §12 约束 1）。
+ */
+function validateVendored(m, lockText) {
+  const errors = [];
+  if (m.vendored === undefined) return errors;
+  if (typeof m.vendored !== 'object' || m.vendored === null || Array.isArray(m.vendored)) {
+    return ['manifest.vendored 必须是对象（坐标 → VendoredEntry）'];
+  }
+  const deps = dependencyCoords(m);
+  const lockNames = lockText ? lockfilePackageNames(lockText) : null;
+  for (const [coord, e] of Object.entries(m.vendored)) {
+    const at = `vendored[${coord}]`;
+    if (!e || typeof e !== 'object' || Array.isArray(e)) {
+      errors.push(`${at} 必须是对象`);
+      continue;
+    }
+    if (typeof e.version !== 'string' || !e.version) errors.push(`${at}.version 必须是非空字符串`);
+    if (typeof e.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(e.sha256)) errors.push(`${at}.sha256 必须是 64 位十六进制`);
+    if (typeof e.size !== 'number' || !Number.isInteger(e.size) || e.size <= 0) errors.push(`${at}.size 必须是正整数`);
+    if (typeof e.path !== 'string' || !e.path) {
+      errors.push(`${at}.path 必须是非空字符串`);
+    } else {
+      const rel = e.path.replace(/\\/g, '/');
+      if (!rel.startsWith('vendor/') || !rel.endsWith('.tgz')) errors.push(`${at}.path 必须位于 vendor/ 下且以 .tgz 结尾`);
+      if (rel.split('/').includes('..')) errors.push(`${at}.path 含危险段 '..'`);
+    }
+    if (e.reason !== undefined && !VENDORED_REASONS.has(e.reason)) {
+      errors.push(`${at}.reason 仅支持 ${[...VENDORED_REASONS].join(' / ')}`);
+    }
+    if (!deps.has(coord)) {
+      if (!lockNames?.has(coord)) {
+        errors.push(`${at} 不在 dependencies ∪ lockfile packages 中（vendored key 必须 ∈ dependencies，闭包条目以 pnpm-lock.yaml 为准放行，见 v5 §12 约束 1）`);
+      }
+      // 闭包条目：无 dependencies 钉死版本 → 跳过版本一致性检查
+    } else if (typeof e.version === 'string' && e.version && deps.get(coord) !== e.version) {
+      errors.push(`${at}.version（${e.version}）与 dependencies 钉死的版本（${deps.get(coord)}）不一致`);
+    }
+  }
+  return errors;
+}
+
+/** dshVersions（§13）：非空、字符串、去重；dshVersion 同时出现时必须 ∈ 集合。 */
+function validateDshVersions(m) {
+  const errors = [];
+  if (m.dshVersions === undefined) return errors;
+  if (!Array.isArray(m.dshVersions) || m.dshVersions.length === 0) {
+    return ['manifest.dshVersions 必须是非空数组（缺省请整个省略该字段）'];
+  }
+  const seen = new Set();
+  for (const v of m.dshVersions) {
+    if (typeof v !== 'string' || !v.trim()) {
+      errors.push('manifest.dshVersions 每项必须是合法版本字符串');
+      break;
+    }
+    if (seen.has(v)) errors.push(`manifest.dshVersions 存在重复项：${v}`);
+    seen.add(v);
+  }
+  if (typeof m.dshVersion === 'string' && m.dshVersion && !m.dshVersions.includes(m.dshVersion)) {
+    errors.push(`manifest.dshVersion（${m.dshVersion}）必须 ∈ dshVersions`);
+  }
+  return errors;
+}
+
+const LAUNCHER_KEYS = new Set(['supported', 'minVersion', 'reason']);
+
+/** launchers（§14）：简式（boolean | string）或全式（supported/minVersion/reason，三字段锁定）。 */
+function validateLaunchers(m) {
+  const errors = [];
+  if (m.launchers === undefined) return errors;
+  if (typeof m.launchers !== 'object' || m.launchers === null || Array.isArray(m.launchers)) {
+    return ['manifest.launchers 必须是对象（启动器 ID → 兼容声明）'];
+  }
+  for (const [id, v] of Object.entries(m.launchers)) {
+    const at = `launchers[${id}]`;
+    if (typeof v === 'boolean' || typeof v === 'string') continue; // 简式糖
+    if (!v || typeof v !== 'object' || Array.isArray(v)) {
+      errors.push(`${at} 必须是 boolean / 字符串（简式）或对象（全式）`);
+      continue;
+    }
+    for (const k of Object.keys(v)) {
+      if (!LAUNCHER_KEYS.has(k)) errors.push(`${at} 含未知字段「${k}」（全式仅锁定 supported / minVersion / reason）`);
+    }
+    if (v.supported !== undefined && typeof v.supported !== 'boolean') errors.push(`${at}.supported 必须是 boolean`);
+    if (v.minVersion !== undefined && (typeof v.minVersion !== 'string' || !v.minVersion.trim())) errors.push(`${at}.minVersion 必须是非空字符串`);
+    if (v.reason !== undefined && typeof v.reason !== 'string') errors.push(`${at}.reason 必须是字符串`);
+  }
+  // 未注册的启动器 ID：校验器警告不拒绝（launcher-registry §2，防拦截新生态）——结构合法即放行。
+  return errors;
+}
+
+/* ---------------------------------------------------------------------------
+ * launchers 归一化与版本比较（v5 §14 / launcher-registry §3，供安装端判定用）
+ * ------------------------------------------------------------------------- */
+
+/**
+ * launchers 简式糖 → 全式归一（v5 §14：语义上只有全式，标量是糖）：
+ *   true          → { supported: true }
+ *   "<version>"   → { supported: true, minVersion: "<version>" }
+ *   false         → { supported: false }
+ * 全式对象仅保留 supported / minVersion / reason 三字段（supported 缺省视为 true）。
+ * 非法条目静默跳过（结构合法性由 validateLaunchers 把关，本纯函数只做容错归一）。
+ * @param {object} launchers manifest.launchers 原文
+ * @returns {{ [id: string]: { supported: boolean, minVersion?: string, reason?: string } }}
+ */
+export function normalizeLaunchers(launchers) {
+  const out = {};
+  if (!launchers || typeof launchers !== 'object' || Array.isArray(launchers)) return out;
+  for (const [id, v] of Object.entries(launchers)) {
+    if (v === true) {
+      out[id] = { supported: true };
+    } else if (v === false) {
+      out[id] = { supported: false };
+    } else if (typeof v === 'string' && v.trim()) {
+      out[id] = { supported: true, minVersion: v.trim() };
+    } else if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const e = { supported: v.supported !== false };
+      if (typeof v.minVersion === 'string' && v.minVersion.trim()) e.minVersion = v.minVersion.trim();
+      if (typeof v.reason === 'string') e.reason = v.reason;
+      out[id] = e;
+    }
+  }
+  return out;
+}
+
+/**
+ * 启动器版本比较（launcher-registry §3）：按 `.` 分段、逐段数值比较、缺段视为 0；
+ * 不做 rc 等预发布语义（启动器场景用不到，避免过度设计）。
+ * @returns {number} >0 表示 a 更新；<0 表示 b 更新；0 表示相等
+ */
+export function compareLauncherVersions(a, b) {
+  const seg = (v) => String(v ?? '').split('.').map((s) => parseInt(s, 10) || 0);
+  const A = seg(a);
+  const B = seg(b);
+  for (let i = 0; i < Math.max(A.length, B.length); i += 1) {
+    const d = (A[i] || 0) - (B[i] || 0);
+    if (d !== 0) return d > 0 ? 1 : -1;
+  }
+  return 0;
 }
 
 /** 单 profile 校验（v4/v5 共用）。 */

@@ -20,6 +20,8 @@ export {
   extractBundles,
   extractDependencies,
   sanitizeSlug,
+  normalizeLaunchers,
+  compareLauncherVersions,
 } from './manifest.js';
 export {
   discoverProfiles,
@@ -35,5 +37,21 @@ export { packProfile, packHome, dspackEntryPath, summarizeHome } from './pack.js
 export { exportRepo, ReleaseConflictError, renderReadme, renderDspackIgnore, renderGitignore, REPO_CONTENT_LEVELS, REPO_CONTENT_LABEL } from './repo.js';
 export { loadWorkspaceConfig, saveWorkspaceConfig, WORKSPACE_KEYS, exportFromWorkspace, exportHomeFromWorkspace } from './workspace.js';
 export { inspectProfile, inspectHome, inspectPack } from './inspect.js';
-export { installPack, verifyIntegrity, reconcileProfile, resolvePackSource } from './install.js';
-export { readMarketIndex, fetchMarketPackDetail, normalizeMarketPack, packDirId, DEFAULT_MARKET_INDEX } from './market.js';
+export { installPack, verifyIntegrity, reconcileProfile, resolvePackSource, resolveDshVersion, judgeLaunchers } from './install.js';
+export {
+  resolveVendoredPlan,
+  isDialectSpec,
+  directMount,
+  materializeVendorBlobs,
+  blobRelPath,
+  coordDirName,
+  allDependencyCoords,
+  lockfilePackageNames,
+  computeOfflineCoverage,
+  listProfileDependencies,
+  collectVendoredForExport,
+  coordFromDirName,
+  repackageFromNodeModules,
+} from './vendored.js';
+export { untar, buildTarball } from './tar.js';
+export { readMarketIndex, fetchMarketPackDetail, normalizeMarketPack, packDirId, DEFAULT_MARKET_INDEX, pickR2Fields, r2Badges, parseLaunchersRegistry, fetchLaunchersRegistry, DEFAULT_LAUNCHERS_REGISTRY_URL, BUILTIN_LAUNCHERS } from './market.js';

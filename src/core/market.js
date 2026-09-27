@@ -6,14 +6,103 @@
  * - 从下载地址/版本号自动判别 `.dspack`(v4/v5) 与 `.tgz`(v3) 旧格式。
  */
 
+import { normalizeLaunchers } from './manifest.js';
+
 /** 默认市场索引：官方 GitHub Pages 站点（CI 每日刷新扫描 dsh-pack 标签仓库）。 */
 export const DEFAULT_MARKET_INDEX = 'https://dsh-packforge.github.io/dsh-pack-market/index.json';
+
+/**
+ * 启动器注册表机器可读版本（specs/launcher-registry.md 头部记载，schemaVersion 1）。
+ * 第三方（如 DSHL）可直接引用；本插件用于「兼容性」编辑器渲染认领 ID + 显示名。
+ */
+export const DEFAULT_LAUNCHERS_REGISTRY_URL = 'https://dsh-packforge.github.io/dsh-pack-market/launchers.json';
+
+/** 内置回落清单（拉取失败 / 结构非法时用；与 specs/launcher-registry.md §1 表同步维护）。 */
+export const BUILTIN_LAUNCHERS = [
+  { id: 'dshl', name: 'DSHL · DeepSeek Harness Launcher' },
+  { id: 'hdsl', name: 'HDSL · Hello DeepSeek Launcher' },
+  { id: 'dsh-packforge-app', name: 'DSH PackForge GUI / dspack CLI' },
+  { id: 'official-desktop', name: 'DeepSeek Harness 官方桌面端' },
+  { id: 'dsh-cli', name: '裸 dsh 命令行' },
+];
+
+/**
+ * 解析 launchers.json（schemaVersion 1）：`launchers[]: {id, name, url?, support?, desc?}` →
+ * `[{id, name}]`。结构非法 / 无有效条目 → null（调用方回落内置清单；消费纪律见规范头部）。
+ */
+export function parseLaunchersRegistry(json) {
+  if (!json || typeof json !== 'object' || Array.isArray(json)) return null;
+  const list = Array.isArray(json.launchers) ? json.launchers : null;
+  if (!list) return null;
+  const out = [];
+  for (const e of list) {
+    if (!e || typeof e !== 'object' || typeof e.id !== 'string' || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(e.id)) continue;
+    out.push({ id: e.id, name: typeof e.name === 'string' && e.name ? e.name : e.id });
+  }
+  return out.length ? out : null;
+}
+
+/**
+ * 拉取启动器注册表（机器可读版）。拉取失败 / 解析非法 → 回落内置清单（source: 'builtin'）。
+ * @returns {Promise<{launchers: Array<{id, name}>, source: 'registry'|'builtin'}>}
+ */
+export async function fetchLaunchersRegistry(host, opts = {}) {
+  const url = opts.url || DEFAULT_LAUNCHERS_REGISTRY_URL;
+  try {
+    const tmp = await host.mkdtemp('dspack-launchers-');
+    try {
+      const dest = host.joinPath(tmp, 'launchers.json');
+      await host.download(url, dest);
+      const raw = await host.readTextFile(dest);
+      const parsed = parseLaunchersRegistry(raw ? JSON.parse(raw) : null);
+      if (parsed) return { launchers: parsed, source: 'registry' };
+    } finally {
+      await host.rm(tmp, { recursive: true, force: true }).catch(() => {});
+    }
+  } catch { /* 落入内置回落 */ }
+  return { launchers: BUILTIN_LAUNCHERS, source: 'builtin' };
+}
 
 /** 由索引条目的 id/owner/repo 推导懒加载目录 key（`<owner>.<repo>`）。 */
 export function packDirId(entry) {
   if (entry?.id && typeof entry.id === 'string') return entry.id;
   if (entry?.owner && entry?.repo) return `${entry.owner}.${entry.repo}`;
   return '';
+}
+
+/** v5 r2 兼容性字段透传（manifest v5 §12/§13/§14）：launchers / vendored / dshVersions
+ *  从索引 entry 或懒加载详情 manifest 里「有什么带什么」。中心索引（index 契约 §6.5）不平铺
+ *  这三个字段（只带派生标记 launcherRestricted），完整内容在 packs/<id>/manifest.json——
+ *  透传只为宽容消费：条目/manifest 里带了就带出，缺失不设键。 */
+export function pickR2Fields(src) {
+  const out = {};
+  if (!src || typeof src !== 'object') return out;
+  if (src.launchers && typeof src.launchers === 'object' && !Array.isArray(src.launchers)) out.launchers = src.launchers;
+  if (src.vendored && typeof src.vendored === 'object' && !Array.isArray(src.vendored)) out.vendored = src.vendored;
+  if (Array.isArray(src.dshVersions)) {
+    const versions = src.dshVersions.filter((v) => typeof v === 'string' && v.trim());
+    if (versions.length) out.dshVersions = versions;
+  }
+  return out;
+}
+
+/** r2 字段 → 市场详情展示徽标（结构化条目，文案由 UI 层按 kind 做 i18n）：
+ *  - { kind: 'launcher-require', id, minVersion }   需启动器 <id> ≥ <ver>（简式/全式都归一）
+ *  - { kind: 'launcher-conflict', id, reason }      声明不支持某启动器（reason 可为空串）
+ *  - { kind: 'vendored', count }                    内嵌 N 个依赖（离线分发）
+ *  - { kind: 'dsh-versions', versions }             兼容 DSH 版本枚举集
+ *  纯支持（supported:true 无 minVersion）不产生徽标；无任何 r2 字段 → 空列表（通用包）。 */
+export function r2Badges(src) {
+  const out = [];
+  const r2 = pickR2Fields(src);
+  for (const [id, e] of Object.entries(normalizeLaunchers(r2.launchers))) {
+    if (e.supported === false) out.push({ kind: 'launcher-conflict', id, reason: e.reason ?? '' });
+    else if (e.minVersion) out.push({ kind: 'launcher-require', id, minVersion: e.minVersion });
+  }
+  const count = r2.vendored ? Object.keys(r2.vendored).length : 0;
+  if (count) out.push({ kind: 'vendored', count });
+  if (r2.dshVersions?.length) out.push({ kind: 'dsh-versions', versions: r2.dshVersions });
+  return out;
 }
 
 /** 读取本地路径或 http(s) URL 的 index.json，返回归一化后的市场条目列表。
@@ -32,10 +121,11 @@ export async function readMarketIndex(host, indexPath) {
 
 /** 懒加载单个整合包的完整 manifest + README（来自 `packs/<owner>.<repo>/`）。
  *  由 index 路径推导 base：URL 去掉尾段 `index.json`；本地路径去掉文件名。
- *  返回 { manifest, readme, dir }：manifest 为解析后的对象（失败 null），readme 为原文（失败 ''）。 */
+ *  返回 { manifest, readme, dir, r2 }：manifest 为解析后的对象（失败 null），readme 为原文（失败 ''），
+ *  r2 = pickR2Fields(manifest)——manifest v5 r2 的 launchers / vendored / dshVersions 有什么带什么。 */
 export async function fetchMarketPackDetail(host, indexPath, entry) {
   const dir = packDirId(entry);
-  if (!dir) return { manifest: null, readme: '', dir: '' };
+  if (!dir) return { manifest: null, readme: '', dir: '', r2: {} };
   const base = detailBase(indexPath);
   const manifestSrc = `${base}packs/${dir}/manifest.json`;
   const readmeSrc = `${base}packs/${dir}/README.md`;
@@ -48,7 +138,7 @@ export async function fetchMarketPackDetail(host, indexPath, entry) {
   if (rawManifest) {
     try { manifest = JSON.parse(rawManifest); } catch { manifest = null; }
   }
-  return { manifest, readme, dir };
+  return { manifest, readme, dir, r2: pickR2Fields(manifest) };
 }
 
 /** 取文本（本地路径或 http(s) URL）：URL 走 host.download 拉到临时文件再读（读完清理）；否则当本地路径读。 */
@@ -120,6 +210,10 @@ export function normalizeMarketPack(entry, locale = 'zh-CN') {
     profiles: entry.profiles,
     presets: entry.presets,
     skills: entry.skills,
+    // v5 r2（index 契约 §3/§6.5）：索引只带派生标记 launcherRestricted（列表廉价过滤用），
+    // 完整 launchers / vendored / dshVersions 在懒加载 manifest；此处宽容透传——条目里带了就带出。
+    launcherRestricted: entry.launcherRestricted === true,
+    ...pickR2Fields(entry),
   };
 }
 

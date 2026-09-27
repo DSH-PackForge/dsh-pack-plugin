@@ -1,9 +1,71 @@
 import { scanProfile, selectFiles } from './scan.js';
-import { buildManifest, buildHomeManifest } from './manifest.js';
+import { buildManifest, buildHomeManifest, validateManifest } from './manifest.js';
 import { buildDspack, encodeText, dspackMarker, DSPACK_CONTAINER_VERSION } from './dspack.js';
+import { collectVendoredForExport, listProfileDependencies, expandVendorSelection } from './vendored.js';
 
 // .dspack（pack-structure v3）布局：根只放机器文件；其余用户文件进 overrides/。
 const ROOT_MACHINE = new Set(['package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml']);
+
+// 体积阈值（publishing v1 §8 体积礼仪）：>500 MB 警告；>2 GiB 拒绝（GitHub Release 单资产上限）。
+const SIZE_WARN_BYTES = 500 * 1024 * 1024;
+const SIZE_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+
+function fmtBytes(n) {
+  if (n >= 1024 * 1024 * 1024) return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / 1024).toFixed(0)} KB`;
+}
+
+/** 归档体积阈值检查：超上限抛错拒绝打包；超警告线记日志（opts.sizeLimits 可覆盖，测试用）。 */
+function checkPackSize(entries, opts, log) {
+  const limits = opts.sizeLimits ?? { warn: SIZE_WARN_BYTES, max: SIZE_MAX_BYTES };
+  const total = Object.values(entries).reduce((s, b) => s + (b?.length ?? 0), 0);
+  if (limits.max > 0 && total > limits.max) {
+    throw new Error(`整合包体积 ${fmtBytes(total)} 超过上限 ${fmtBytes(limits.max)}（GitHub Release 单资产上限 2 GiB，见 publishing v1 §8）。请改用 files[] 指针制或减小 vendored 覆盖范围`);
+  }
+  if (limits.warn > 0 && total > limits.warn) {
+    log(`警告：整合包体积 ${fmtBytes(total)} 超过 ${fmtBytes(limits.warn)}——建议优先 files[] 指针制（重内容按需下载），仅在确需离线时全量 vendoring（publishing v1 §8）`);
+  }
+  return total;
+}
+
+/**
+ * v5 r2：按 vendor 档位 + UI 手动勾选内嵌 vendor/ + 改写 manifest。
+ * 档位（workspace-config v1 r2）：`'off'` 禁用；`'auto'`（默认）= 手动 ∪ round-trip ∪ 死上游探测；
+ * `'full'` = 手动 ∪ 全部直接依赖 ∪ 传递闭包（沿 lockText 的 pnpm-lock.yaml 收齐，离线包形态）。
+ */
+async function applyVendorSelection(host, manifest, lookupDirs, opts, progress, lockText = null) {
+  if (opts.vendor === 'off') return null;
+  const log = (s) => { if (typeof opts.onOutput === 'function') opts.onOutput(String(s) + '\n'); };
+  const manual = opts.vendorCoords && typeof opts.vendorCoords === 'object' ? opts.vendorCoords : {};
+  const { selection, probed } = await expandVendorSelection(host, lookupDirs, manual, opts.vendor, {
+    registry: opts.registry,
+    log,
+  });
+  if (!Object.keys(selection).length && opts.vendor !== 'full') return null;
+  if (probed.length) log(`自动补选内嵌：${probed.join(', ')}`);
+  progress('vendor', `内嵌 ${Object.keys(selection).length} 个 vendored 依赖（档位 ${opts.vendor ?? 'auto'}）`);
+  const vr = await collectVendoredForExport(host, lookupDirs, manifest.dependencies ?? {}, selection, {
+    registry: opts.registry,
+    log,
+    closure: opts.vendor === 'full',
+    lockText,
+  });
+  manifest.dependencies = vr.dependencies;
+  manifest.vendored = vr.vendored;
+  for (const note of vr.notes) log(`注意：${note}`);
+  progress('vendor', `vendored 完成：${Object.keys(vr.vendored).length} 个 tarball 已内嵌`);
+  return vr;
+}
+
+/** 打包前强校验（含 v5 r2 字段：dshVersions ∋ dshVersion、launchers 结构等）——错误在导出时报出，不带病出厂。
+ * lockText（随包 pnpm-lock.yaml）供 vendored 闭包条目对账放行（§12 约束 1）。 */
+function assertManifestValid(manifest, lockText = null) {
+  const errors = validateManifest(manifest, { lockText });
+  if (errors.length) {
+    throw new Error(`导出的 manifest 不合法（${errors.join('；')}）——请检查「兼容性」等表单项后重试`);
+  }
+}
 
 /** 把扫描出的相对路径映射为归档内条目名。 */
 export function dspackEntryPath(rel) {
@@ -60,9 +122,20 @@ export async function packProfile(host, profile, opts = {}) {
     if (!data) continue;
     entries[`home/${f.rel}`] = data;
   }
+  // v5 r2：手动勾选的依赖内嵌（UI 依赖清单）→ vendor/ 条目 + manifest.vendored + dependencies 三处一致
+  // full 档闭包收集以 profile 的 pnpm-lock.yaml 为准（与归档内快照同源）
+  const lockText = await host.readTextFile(host.joinPath(profile.dir, 'pnpm-lock.yaml'));
+  const vendorResult = await applyVendorSelection(host, manifest, [profile.dir], opts, progress, lockText);
+  if (vendorResult) Object.assign(entries, vendorResult.entries);
+
+  // 打包前强校验（r2 字段结构 / dshVersion ∈ dshVersions 等；闭包条目按 lockfile 放行）
+  assertManifestValid(manifest, lockText);
+
   // manifest.json 始终在归档根（契约头，覆盖任何扫描残留）；dspack.json 为容器标记。
   entries['manifest.json'] = encodeText(JSON.stringify(manifest, null, 2) + '\n');
   entries['dspack.json'] = encodeText(JSON.stringify(dspackMarker(DSPACK_CONTAINER_VERSION)) + '\n');
+
+  checkPackSize(entries, opts, (s) => { if (typeof opts.onOutput === 'function') opts.onOutput(s + '\n'); });
 
   progress('pack', '打包 .dspack');
   const bytes = buildDspack(entries);
@@ -83,6 +156,7 @@ export async function packProfile(host, profile, opts = {}) {
     size: bytes.length,
     included: Object.keys(entries).length,
     excluded: scan.excluded.length,
+    vendored: Object.keys(manifest.vendored ?? {}),
   };
 }
 
@@ -147,8 +221,36 @@ export async function packHome(host, home, opts = {}) {
     if (!data) continue;
     entries[dspackEntryPath(f.rel)] = data;
   }
+
+  // v5 r2：vendor 档位 + 手动勾选内嵌（vendor/ 是包级目录；依赖在各 profile 的 node_modules 里查找）。
+  // 收集时按「坐标 → 版本」聚合，再回写每个 ProfileUnit（file:vendor-blobs 旧 key 一并替换）。
+  // full 档闭包收集以 home 根的 pnpm-lock.yaml 为准（与归档内快照同源）。
+  const lookupDirs = profiles.map((p) => p.dir);
+  const lockText = await host.readTextFile(host.joinPath(home.dir, 'pnpm-lock.yaml'));
+  const vendorResult = await applyVendorSelection(host, manifest, lookupDirs, opts, progress, lockText);
+  if (vendorResult) {
+    Object.assign(entries, vendorResult.entries);
+    for (const [name, unit] of Object.entries(manifest.profiles)) {
+      const dir = host.joinPath(home.dir, 'profiles', name);
+      const localList = await listProfileDependencies(host, [dir]);
+      const deps = { ...(unit.dependencies ?? {}) };
+      for (const item of localList) {
+        if (!Object.hasOwn(manifest.vendored ?? {}, item.coord)) continue;
+        delete deps[item.pkgName];
+        delete deps[item.coord];
+        deps[item.coord] = manifest.dependencies[item.coord];
+      }
+      unit.dependencies = deps;
+    }
+  }
+
+  // 打包前强校验（r2 字段结构 / dshVersion ∈ dshVersions 等；闭包条目按 lockfile 放行）
+  assertManifestValid(manifest, lockText);
+
   entries['manifest.json'] = encodeText(JSON.stringify(manifest, null, 2) + '\n');
   entries['dspack.json'] = encodeText(JSON.stringify(dspackMarker(DSPACK_CONTAINER_VERSION)) + '\n');
+
+  checkPackSize(entries, opts, (s) => { if (typeof opts.onOutput === 'function') opts.onOutput(s + '\n'); });
 
   progress('pack', '打包 .dspack');
   const bytes = buildDspack(entries);

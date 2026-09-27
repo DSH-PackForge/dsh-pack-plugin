@@ -11,6 +11,11 @@ import {
   installPack,
   resolvePackSource,
   readMarketIndex,
+  fetchMarketPackDetail,
+  normalizeLaunchers,
+  judgeLaunchers,
+  listProfileDependencies,
+  listInstalledDshVersions,
   DEFAULT_MARKET_INDEX,
 } from './core/index.js';
 import path from 'node:path';
@@ -18,6 +23,11 @@ import os from 'node:os';
 import fsp from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { getHost } from './host.js';
+// r2Badges / pickR2Fields 是市场 r2 透传新导出（core/index.js 桶文件未列，直连模块导入）
+import { r2Badges, fetchLaunchersRegistry } from './core/market.js';
+
+// launchers/registry 端点缓存（{at, value}；TTL 1h，进程内共享）
+let launchersRegistryCache = null;
 import { listProfiles, createProfile, deleteProfile, readState, writeState, resolveActiveName } from './profiles.js';
 import { switchProfile } from './junction.js';
 import { CHANNEL, PROFILE_NAME_RE } from './channel.js';
@@ -79,6 +89,8 @@ export const ENDPOINTS = {
     platform: process.platform,
     node: process.version,
     dshVersion: process.env.DSH_VERSION ?? null,
+    // 本机已装 DSH 版本（dshVersions 多选建议来源，workspace-config v1 r2）
+    installedDshVersions: await listInstalledDshVersions(getHost()),
     rpc: CHANNEL,
   }),
 
@@ -193,6 +205,20 @@ export const ENDPOINTS = {
       dshVersion: payload?.dshVersion,
       profileName: payload?.profileName,
       exportContent: payload?.exportContent,
+      // v5 r2 兼容性字段（UI「兼容性」组）：dshVersions 枚举集 + launchers 兼容声明（透传 buildManifest）
+      dshVersions:
+        Array.isArray(payload?.dshVersions) && payload.dshVersions.length ? payload.dshVersions : undefined,
+      launchers:
+        payload?.launchers && typeof payload.launchers === 'object' && !Array.isArray(payload.launchers) && Object.keys(payload.launchers).length
+          ? payload.launchers
+          : undefined,
+      // v5 r2：vendoring 档位（workspace-config v1 r2）：auto（默认）/ off / full
+      vendor: typeof payload?.vendor === 'string' && ['auto', 'off', 'full'].includes(payload.vendor) ? payload.vendor : undefined,
+      // v5 r2：UI 依赖清单手动勾选的内嵌项 { 坐标: reason }（transient，不进 .dshpkcfg 白名单）
+      vendorCoords:
+        payload?.vendorCoords && typeof payload.vendorCoords === 'object' && Object.keys(payload.vendorCoords).length
+          ? payload.vendorCoords
+          : undefined,
       force: payload?.force === true,
       mode: payload?.mode,
       content: payload?.content,
@@ -201,8 +227,7 @@ export const ENDPOINTS = {
     };
     tasks.enqueue(async () => {
       try {
-        const r = await exportFromWorkspace(host, profile, overrides);
-        tasks.finish(id, {
+        const r = await exportFromWorkspace(host, profile, overrides);        tasks.finish(id, {
           ok: true,
           title: `导出 ${r.manifest?.name ?? profile.name}`,
           result: r.output
@@ -214,6 +239,15 @@ export const ENDPOINTS = {
       }
     }).catch(() => {});
     return { taskId: id };
+  },
+
+  // v5 r2：列出 profile 的依赖清单（UI「内嵌依赖」勾选列表数据源；无网络请求，纯本地）。
+  // kind ∈ npm（registry 精确版本）/ git（github sha）/ vendored（装过 vendored 包，可直接复用 tarball）。
+  'pack/dependencies': async ({ runtime, payload }) => {
+    const host = getHost();
+    const profile = await resolveExportProfile(runtime, host, payload?.profile ?? null);
+    const deps = await listProfileDependencies(host, [profile.dir]);
+    return { profile: profile.name, dir: profile.dir, deps };
   },
 
   // 读取某个 profile 的工作区配置（.dshpkcfg）；不存在/非法 → config: null。
@@ -246,6 +280,15 @@ export const ENDPOINTS = {
         size: r.size,
         totalEntries: r.totalEntries,
         validation: r.validation ?? [],
+        // v5 r2（v3 §8.4 判定表）：安装前 launchers 判定——警告放行、不硬拒。UI 据 warn 级
+        // （supported:false）弹确认对话框、info 级（版本不足 / 白名单未含本启动器）轻提示。
+        // 本插件注入官方桌面端（selfId=official-desktop）；版本自报取 DSH_VERSION，
+        // 缺省按「版本未知」轻提示放行（与 pack/install 的判定参数一致，所见即所装）。
+        launchersWarnings: judgeLaunchers(
+          normalizeLaunchers(r.manifest?.launchers),
+          'official-desktop',
+          process.env.DSH_VERSION ?? null,
+        ),
       };
     } finally {
       if (tempDir) await host.rm(tempDir, { recursive: true, force: true }).catch(() => {});
@@ -269,13 +312,17 @@ export const ENDPOINTS = {
           // 市场安装时透传索引里的 sha256/size，交给 installPack 做完整性校验（防篡改/坏档）。
           expectedSha256: payload?.expectedSha256 || undefined,
           expectedSize: payload?.expectedSize,
+          // v5 r2 launchers 判定：本插件运行在官方桌面端内，版本取 DSH_VERSION（无则按「版本未知」
+          // 轻提示放行）；launcherId 默认不传（core 缺省 'official-desktop'），预留 payload 覆盖口。
+          launcherId: payload?.launcherId || undefined,
+          launcherVersion: process.env.DSH_VERSION ?? null,
           onProgress: tasks.progressBridge(id),
           onOutput: tasks.logSink(id),
         });
         tasks.finish(id, {
           ok: true,
           title: `安装 ${r.profileName}`,
-          result: { profileName: r.profileName, dir: r.dir, dryRun: r.dryRun === true, installed: r.installed === true, filesDownloaded: r.filesDownloaded ?? 0 },
+          result: { profileName: r.profileName, dir: r.dir, dryRun: r.dryRun === true, installed: r.installed === true, filesDownloaded: r.filesDownloaded ?? 0, launchers: r.launchers ?? null },
         });
       } catch (e) {
         tasks.finish(id, { ok: false, error: String(e?.message ?? e) });
@@ -290,7 +337,31 @@ export const ENDPOINTS = {
     return { packs: index?.packs ?? [], error: index?.error ?? null };
   },
 
+  // 市场详情（v5 r2）：懒加载 packs/<id>/manifest.json + README（fetchMarketPackDetail）。
+  // 中心索引不平铺 launchers / vendored / dshVersions（index 契约 §6.5），完整内容只有懒加载
+  // manifest 里有——r2 = pickR2Fields(manifest) 原文透传，badges = r2Badges(manifest) 结构化
+  // 徽标（文案由 UI 层按 kind 做 i18n），UI 详情弹窗直接渲染。
+  'pack/market-detail': async ({ payload }) => {
+    const host = getHost();
+    const entry = payload?.pack;
+    if (!entry || typeof entry !== 'object') throw new Error('缺少市场条目');
+    const d = await fetchMarketPackDetail(host, payload?.indexPath ?? DEFAULT_MARKET_INDEX, entry);
+    return { manifest: d.manifest, readme: d.readme, dir: d.dir, r2: d.r2, badges: r2Badges(d.manifest) };
+  },
+
   'task/list': async () => ({ tasks: tasks.list() }),
+
+  // 启动器注册表（机器可读版，specs/launcher-registry.md 头部）：「兼容性」编辑器渲染认领 ID +
+  // 显示名。带 1h 内存缓存；拉取失败 / 结构非法回落内置清单（fetchLaunchersRegistry 内置纪律）。
+  'launchers/registry': async () => {
+    const now = Date.now();
+    if (launchersRegistryCache && now - launchersRegistryCache.at < 60 * 60 * 1000) {
+      return launchersRegistryCache.value;
+    }
+    const value = await fetchLaunchersRegistry(getHost());
+    launchersRegistryCache = { at: now, value };
+    return value;
+  },
 
   // About 页「检查更新」：拉 registry 最新版本并与本地比较（网络 I/O 走 host，与 ensure-manager 同款）。
   'plugin/check-update': async () => {

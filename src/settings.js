@@ -59,6 +59,11 @@ const dict = {
     'field.newName': '新 profile 名',
     'action.export': '导出',
     'action.quickExport': '快捷导出',
+    'action.upload': '上传到 GitHub',
+    'upload.hint': '先导出，再点此切回聊天框让 AI 帮你发 Release',
+    'upload.sent': '已切回聊天框，AI 接手上传',
+    'upload.failed': '发送失败',
+    'upload.noService': '聊天服务不可用（DSH 版本过低）',
     'action.install': '安装',
     'action.switch': '切换',
     'action.create': '新建',
@@ -72,6 +77,29 @@ const dict = {
     'content.manifest': '仅清单（manifest.json）',
     'content.readme': '清单 + README',
     'content.full': '全套文件（overrides/ + release/）',
+    'vendor.title': '内嵌依赖（vendored · 离线分发）',
+    'vendor.hint': '勾选要内嵌进 .dspack 的插件：上游已消失 / 魔改 / 需离线分发的依赖建议内嵌；体积大时优先 files[] 指针制',
+    'vendor.reload': '刷新依赖',
+    'vendor.none': '该 profile 没有依赖',
+    'vendor.already': '已内嵌（复用原 tarball）',
+    'vendor.notInstalled': '未安装（无法内嵌）',
+    'vendor.selected': '已选',
+    'vendor.kind.npm': 'npm',
+    'vendor.kind.git': 'git',
+    'vendor.kind.vendored': '内嵌',
+    'vendor.mode': '内嵌档位',
+    'vendor.mode.auto': '自动（死上游探测 + 手动勾选）',
+    'vendor.mode.off': '关闭（不内嵌）',
+    'vendor.mode.full': '全量（全部直接依赖 · 离线包）',
+    'compat.title': '兼容性（v5 r2）',
+    'compat.dshVersions': '兼容 DSH 版本集（dshVersions）',
+    'compat.dshVersionsHint': '逗号分隔的实测兼容版本枚举（如 0.1.1-rc.2, 0.1.0）；「DSH 版本」必须包含在内；留空 = 仅按 dshVersion',
+    'compat.launchers': '启动器兼容声明（launchers）',
+    'launcher.none': '未声明',
+    'launcher.support': '支持',
+    'launcher.conflict': '冲突',
+    'launcher.minVersion': '最低版本（可选）',
+    'launcher.reason': '冲突原因（建议填写）',
     'group.content': '导出内容（上一级目录开关）',
     'content.skill': '导出 skills/',
     'content.preset': '导出 .agent-presets/',
@@ -95,6 +123,18 @@ const dict = {
     'market.empty': '市场暂无内容',
     'market.error': '市场加载失败',
     'market.none': '（无）',
+    'market.detail': '详情',
+    'market.detailTitle': '整合包详情',
+    'market.launcherRestricted': '启动器限制',
+    'market.r2.launcherRequire': '需启动器 {id} ≥ {ver}',
+    'market.r2.launcherConflict': '不支持在 {id} 上运行：{reason}',
+    'market.r2.noReason': '未提供原因',
+    'market.r2.vendored': '内嵌 {count} 个依赖（离线分发）',
+    'market.r2.dshVersions': '兼容 DSH 版本：{versions}',
+    'market.r2.none': '无启动器兼容限制，未内嵌依赖',
+    'installConfirm.title': '安装确认',
+    'installConfirm.hint': '该整合包的启动器兼容声明存在警告，确认后将照常安装：',
+    'installConfirm.ok': '仍要安装',
     'confirm.title': '切换 profile',
     'confirm.from': '当前',
     'confirm.to': '目标',
@@ -165,8 +205,36 @@ const dict = {
     'field.profile': 'Profile to export (default: active)',
     'field.source': '.dspack path or URL',
     'field.newName': 'New profile name',
+    'vendor.title': 'Vendored deps (offline distribution)',
+    'vendor.hint': 'Pick plugins to embed into the .dspack: dead-upstream / modified / offline deps are good candidates; prefer files[] pointers for large content',
+    'vendor.reload': 'Reload deps',
+    'vendor.none': 'No dependencies in this profile',
+    'vendor.already': 'Vendored (reuses original tarball)',
+    'vendor.notInstalled': 'Not installed (cannot embed)',
+    'vendor.selected': 'selected',
+    'vendor.kind.npm': 'npm',
+    'vendor.kind.git': 'git',
+    'vendor.kind.vendored': 'vendored',
+    'vendor.mode': 'Vendor mode',
+    'vendor.mode.auto': 'Auto (dead-upstream probe + manual picks)',
+    'vendor.mode.off': 'Off (no embedding)',
+    'vendor.mode.full': 'Full (all direct deps · offline pack)',
+    'compat.title': 'Compatibility (v5 r2)',
+    'compat.dshVersions': 'Compatible DSH versions (dshVersions)',
+    'compat.dshVersionsHint': 'Comma-separated tested versions (e.g. 0.1.1-rc.2, 0.1.0); must include the "DSH version" field; blank = dshVersion only',
+    'compat.launchers': 'Launcher compatibility (launchers)',
+    'launcher.none': 'Unspecified',
+    'launcher.support': 'Supported',
+    'launcher.conflict': 'Conflict',
+    'launcher.minVersion': 'Min version (optional)',
+    'launcher.reason': 'Conflict reason (recommended)',
     'action.export': 'Export',
     'action.quickExport': 'Quick export',
+    'action.upload': 'Upload to GitHub',
+    'upload.hint': 'Export first, then switch to chat and let the AI publish the release',
+    'upload.sent': 'Switched to chat — the AI is on it',
+    'upload.failed': 'Send failed',
+    'upload.noService': 'Chat service unavailable (DSH too old)',
     'action.install': 'Install',
     'action.switch': 'Switch',
     'action.create': 'Create',
@@ -186,6 +254,18 @@ const dict = {
     'market.empty': 'Market is empty',
     'market.error': 'Market load failed',
     'market.none': '(none)',
+    'market.detail': 'Details',
+    'market.detailTitle': 'Modpack details',
+    'market.launcherRestricted': 'launcher-restricted',
+    'market.r2.launcherRequire': 'Requires launcher {id} ≥ {ver}',
+    'market.r2.launcherConflict': 'Not supported on {id}: {reason}',
+    'market.r2.noReason': 'no reason given',
+    'market.r2.vendored': '{count} vendored deps (offline distribution)',
+    'market.r2.dshVersions': 'Compatible DSH versions: {versions}',
+    'market.r2.none': 'No launcher restrictions, no vendored deps',
+    'installConfirm.title': 'Install confirmation',
+    'installConfirm.hint': 'This pack has launcher-compatibility warnings. It will still be installed after you confirm:',
+    'installConfirm.ok': 'Install anyway',
     'confirm.title': 'Switch profile',
     'confirm.from': 'current',
     'confirm.to': 'target',
@@ -261,9 +341,12 @@ const OUTPUT_FIELDS = ['dshVersion', 'out'];
 const MODES = ['dspack', 'repo'];
 const CONTENT_LEVELS = ['manifest', 'readme', 'full'];
 const CONTENT_TOGGLES = ['skill', 'preset', 'instruction'];
+// 启动器编辑器回落清单（launchers/registry 端点不可用时用；与 specs/launcher-registry.md §1 同步维护）。
+const LAUNCHER_IDS = ['dshl', 'hdsl', 'dsh-packforge-app', 'official-desktop', 'dsh-cli'];
 
 export function DspackSection({ t, packforge }) {
   const rpc = packforge?.rpc;
+  const sendToChat = packforge?.sendToChat;
   const [tab, setTab] = useState('manage');
   const [profiles, setProfiles] = useState([]);
   const [result, setResult] = useState(null); // null | {pending:true} | {ok:true,text} | {ok:false,error}
@@ -279,6 +362,16 @@ export function DspackSection({ t, packforge }) {
   const [contentLevel, setContentLevel] = useState('readme');
   const [exportContent, setExportContent] = useState({ skill: false, preset: false, instruction: false });
   const [loadedFor, setLoadedFor] = useState(null); // 已自动加载过配置的 profile 名
+  const [deps, setDeps] = useState(null); // 导出依赖清单（null=未加载；[] = 无依赖）
+  const [depsFor, setDepsFor] = useState(null); // 已加载依赖清单的 profile 名
+  const [vendorSel, setVendorSel] = useState({}); // 勾选内嵌：{ 坐标: reason }（reason 缺省 explicit）
+  const [dshVersionsText, setDshVersionsText] = useState(''); // 兼容 DSH 版本集（逗号分隔文本）
+  // 启动器兼容编辑：{ [id]: { mode: 'support'|'conflict', minVersion, reason } }；无条目 = 未声明
+  const [launchersState, setLaunchersState] = useState({});
+  const [vendorMode, setVendorMode] = useState('auto'); // vendoring 档位（workspace-config v1 r2）：auto | off | full
+  const [installedDsh, setInstalledDsh] = useState([]); // 本机已装 DSH 版本（dshVersions 建议列表）
+  // 启动器注册表（launchers/registry 端点，机器可读版）：[{id, name}]；null = 未加载（回落 LAUNCHER_IDS）
+  const [launchersReg, setLaunchersReg] = useState(null);
   const [confirm, setConfirm] = useState(null); // null | {from,to,hasManager,firstTime}
   const [managerSource, setManagerSource] = useState('npm'); // 'npm'（拉取最新，默认）| 'copy'（次之复制）
   const [tasksOpen, setTasksOpen] = useState(false); // 任务中心面板是否展开（内嵌视图，替代旧版独立小窗）
@@ -286,6 +379,12 @@ export function DspackSection({ t, packforge }) {
   const [update, setUpdate] = useState(null); // null | {checking:true} | {current,latest,outdated,npmUrl} | {error}
   const [proxy, setProxy] = useState(''); // 代理地址（config.proxy；空 = 回落环境变量）
   const [proxyMode, setProxyMode] = useState('auto'); // auto | direct | manual
+  const [upload, setUpload] = useState(null); // null | {pending:true} | {ok:true,text} | {ok:false,error}
+  // 安装确认（v5 r2 §8.4 判定表第 4 行）：pack/view 预检出 warn 级 launchers 警告时弹确认，
+  // 用户点「仍要安装」后才继续 pack/install。null | { source, extra, warnings, fromDialog }
+  const [installConfirm, setInstallConfirm] = useState(null);
+  // 市场详情弹窗（v5 r2 徽标 + README 懒加载）：null | {pending:true,pack} | {error,pack} | {pack,manifest,readme,r2,badges}
+  const [detail, setDetail] = useState(null);
 
   const call = async (endpoint, payload) => {
     if (!rpc) return { ok: false, error: t('result.noRpc') };
@@ -333,6 +432,18 @@ export function DspackSection({ t, packforge }) {
       if (v === 'direct') { setProxyMode('direct'); setProxy(''); }
       else if (v) { setProxyMode('manual'); setProxy(v); }
       else { setProxyMode('auto'); setProxy(''); }
+    })();
+    // 已装 DSH 版本（dshVersions 多选建议来源）
+    void (async () => {
+      const r = await call('runtime/get', {});
+      if (r.ok && Array.isArray(r.value?.installedDshVersions)) setInstalledDsh(r.value.installedDshVersions);
+    })();
+    // 启动器注册表（机器可读版，launchers/registry 端点）：失败静默回落内置清单
+    void (async () => {
+      const r = await call('launchers/registry', {});
+      if (r.ok && Array.isArray(r.value?.launchers) && r.value.launchers.length) {
+        setLaunchersReg(r.value.launchers);
+      }
     })();
   }, []);
 
@@ -446,13 +557,22 @@ export function DspackSection({ t, packforge }) {
     const src = source.trim();
     if (!src) return setFieldError(t('err.source'));
     setSubmitting(true);
-    const r = await call('pack/install', { source: src });
+    // 安装前预检（v5 r2 §8.4）：pack/view 做 launchers 判定——warn 级须用户确认后才安装。
+    const v = await call('pack/view', { source: src });
     setSubmitting(false);
-    if (!r.ok) return setFieldError(r.error);
+    if (!v.ok) return setFieldError(v.error);
+    const warnings = v.value?.launchersWarnings ?? [];
+    if (warnings.some((w) => w.level === 'warn')) {
+      // 重警告（supported:false）：弹确认对话框，确认后走 confirmInstall（导入弹窗暂留，取消可返回）
+      setInstallConfirm({ source: src, extra: {}, warnings, fromDialog: true });
+      return;
+    }
+    // info 级（版本不足 / 白名单未含本启动器）：轻提示放行，不打断
+    const infos = warnings.filter((w) => w.level === 'info');
+    if (infos.length) showOk(infos.map((w) => w.message).join('\n'));
     setSource('');
     closeDialog();
-    showOk(t('result.taskStarted'));
-    watch(r.value.taskId);
+    await doInstallTask(src, {});
   };
 
   const loadMarket = async () => {
@@ -462,18 +582,69 @@ export function DspackSection({ t, packforge }) {
     else setMarket({ packs: [], error: r.error });
   };
 
+  // 真正的安装（任务中心非阻塞）：launchers 确认流的终点，市场 / 本地导入两条路径共用。
+  const doInstallTask = async (src, extra) => {
+    setResult({ pending: true });
+    const r = await call('pack/install', { source: src, ...extra });
+    if (!r.ok) return showErr(r.error);
+    showOk(t('result.taskStarted'));
+    watch(r.value.taskId);
+  };
+
   const doInstallFromMarket = async (pack) => {
     const src = pack?.downloadUrl || pack?.urls?.[0];
     if (!src) return showErr('该包没有可下载地址');
     setResult({ pending: true });
-    const r = await call('pack/install', {
-      source: src,
+    // 安装前预检（v5 r2 §8.4）：与本地导入同一条 pack/view 校验点。
+    const v = await call('pack/view', { source: src });
+    if (!v.ok) return showErr(v.error);
+    const warnings = v.value?.launchersWarnings ?? [];
+    const extra = {
       expectedSha256: pack?.sha256 || undefined,
       expectedSize: pack?.size || undefined,
+    };
+    if (warnings.some((w) => w.level === 'warn')) {
+      setInstallConfirm({ source: src, extra, warnings, fromDialog: false });
+      return;
+    }
+    const infos = warnings.filter((w) => w.level === 'info');
+    if (infos.length) showOk(infos.map((w) => w.message).join('\n'));
+    await doInstallTask(src, extra);
+  };
+
+  // 安装确认弹窗的「仍要安装」：warn 级放行须用户确认（v3 §8.4「警告放行」+ 留痕由任务日志承担）。
+  const confirmInstall = async () => {
+    const c = installConfirm;
+    if (!c) return;
+    setInstallConfirm(null);
+    if (c.fromDialog) {
+      setSource('');
+      closeDialog();
+    }
+    await doInstallTask(c.source, c.extra ?? {});
+  };
+
+  // 市场详情：懒加载 packs/<id>/manifest.json + README（fetchMarketPackDetail），弹窗展示 r2 徽标。
+  const doMarketDetail = async (pack) => {
+    setDetail({ pending: true, pack });
+    const r = await call('pack/market-detail', { pack });
+    if (!r.ok) { setDetail({ error: r.error, pack }); return; }
+    setDetail({
+      pack,
+      manifest: r.value.manifest,
+      readme: r.value.readme ?? '',
+      r2: r.value.r2 ?? {},
+      badges: r.value.badges ?? [],
     });
-    if (!r.ok) return showErr(r.error);
-    showOk(t('result.taskStarted'));
-    watch(r.value.taskId);
+  };
+
+  // r2 徽标 → 本地化文案（结构化数据来自 core r2Badges，经 endpoint 透传；文案在 UI 层 i18n）。
+  const badgeText = (b) => {
+    if (b.kind === 'launcher-require') return t('market.r2.launcherRequire').replace('{id}', b.id).replace('{ver}', b.minVersion);
+    if (b.kind === 'launcher-conflict') return t('market.r2.launcherConflict').replace('{id}', b.id).replace('{reason}', b.reason || t('market.r2.noReason'));
+    if (b.kind === 'vendored') return t('market.r2.vendored').replace('{count}', String(b.count));
+    if (b.kind === 'dsh-versions') return t('market.r2.dshVersions').replace('{versions}', b.versions.join(', '));
+    return '';
   };
 
   const doExportFromForm = async () => {
@@ -491,10 +662,69 @@ export function DspackSection({ t, packforge }) {
       preset: !!exportContent.preset,
       instruction: !!exportContent.instruction,
     };
+    // v5 r2：兼容性字段（dshVersions 枚举集 + launchers 兼容声明，两种形态都写 manifest）。
+    // 首个版本即首选（workspace-config v1 r2）：未显式填「DSH 版本」时用集合首项作 dshVersion。
+    const versions = parseDshVersionsInput(dshVersionsText);
+    if (versions.length) {
+      overrides.dshVersions = versions;
+      if (!overrides.dshVersion) overrides.dshVersion = versions[0];
+    }
+    const launchers = buildLaunchersField();
+    if (Object.keys(launchers).length) overrides.launchers = launchers;
+    // v5 r2：vendoring 档位（auto/off/full；repo 形态不内嵌，不传）
+    if (mode === 'dspack') overrides.vendor = vendorMode;
+    // v5 r2：手动勾选的内嵌依赖（叠加在档位之上）
+    if (mode === 'dspack' && Object.keys(vendorSel).length) {
+      overrides.vendorCoords = { ...vendorSel };
+    }
     const r = await call('pack/export', overrides);
     if (!r.ok) return showErr(r.error);
     showOk(t('result.taskStarted'));
     watch(r.value.taskId);
+  };
+
+  // 导出页「上传到 GitHub」：切回聊天框并把发布指令直接发给 AI（走 session-scope 的 conversation.send）。
+  const doAiUpload = async () => {
+    if (!sendToChat) { setUpload({ ok: false, error: t('upload.noService') }); return; }
+    setUpload({ pending: true });
+    const parts = ['请帮我把整合包发布到 GitHub'];
+    if (exportProfile) parts.push(`profile=${exportProfile}`);
+    if ((meta.name ?? '').trim()) parts.push(`name=${String(meta.name).trim()}`);
+    if ((meta.version ?? '').trim()) parts.push(`version=${String(meta.version).trim()}`);
+    const prompt = parts.join('，') + '。';
+    try {
+      await sendToChat(prompt);
+      setUpload({ ok: true, text: t('upload.sent') });
+    } catch (e) {
+      setUpload({ ok: false, error: `${t('upload.failed')}：${String(e?.message ?? e)}` });
+    }
+  };
+
+  // 「兼容 DSH 版本集」文本 → 去重去空数组（中英文逗号 / 分号 / 空白分隔）。
+  const parseDshVersionsInput = (text) =>
+    [...new Set(String(text ?? '').split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean))];
+
+  // 启动器编辑状态 → manifest launchers 字段（简式糖：支持+版本 → "ver"；支持 → true；冲突 → false / 全式带 reason）。
+  const buildLaunchersField = () => {
+    const out = {};
+    for (const [id, s] of Object.entries(launchersState)) {
+      if (!s || (s.mode !== 'support' && s.mode !== 'conflict')) continue;
+      if (s.mode === 'support') out[id] = (s.minVersion ?? '').trim() || true;
+      else out[id] = (s.reason ?? '').trim() ? { supported: false, reason: (s.reason ?? '').trim() } : false;
+    }
+    return out;
+  };
+
+  // manifest/.dshpkcfg 的 launchers 值 → 编辑状态（简式/全式都归一）。
+  const launchersValueToState = (value) => {
+    const out = {};
+    for (const [id, v] of Object.entries(value ?? {})) {
+      if (v === true) out[id] = { mode: 'support', minVersion: '', reason: '' };
+      else if (typeof v === 'string') out[id] = { mode: 'support', minVersion: v, reason: '' };
+      else if (v === false) out[id] = { mode: 'conflict', minVersion: '', reason: '' };
+      else if (v && typeof v === 'object') out[id] = { mode: v.supported === false ? 'conflict' : 'support', minVersion: typeof v.minVersion === 'string' ? v.minVersion : '', reason: typeof v.reason === 'string' ? v.reason : '' };
+    }
+    return out;
   };
 
   // 把 .dshpkcfg 回填进表单：空串跳过（保留表单默认值）；无 config 则清空回填。
@@ -513,6 +743,10 @@ export function DspackSection({ t, packforge }) {
       preset: ec?.preset === true,
       instruction: ec?.instruction === true,
     });
+    // v5 r2 兼容性字段回填（数组 → 逗号文本；launchers 简式/全式 → 编辑状态；vendor 档位）
+    setDshVersionsText(Array.isArray(cfg?.dshVersions) ? cfg.dshVersions.join(', ') : '');
+    setLaunchersState(launchersValueToState(cfg?.launchers));
+    setVendorMode(['auto', 'off', 'full'].includes(cfg?.vendor) ? cfg.vendor : 'auto');
   };
 
   const loadConfig = async (name, silent = false) => {
@@ -542,6 +776,12 @@ export function DspackSection({ t, packforge }) {
       preset: !!exportContent.preset,
       instruction: !!exportContent.instruction,
     };
+    // v5 r2 兼容性字段持久化（.dshpkcfg 白名单已扩展）
+    const versions = parseDshVersionsInput(dshVersionsText);
+    if (versions.length) cfg.dshVersions = versions;
+    const launchers = buildLaunchersField();
+    if (Object.keys(launchers).length) cfg.launchers = launchers;
+    if (vendorMode !== 'auto') cfg.vendor = vendorMode; // auto 为缺省档，不落盘
     const r = await call('pack/config-save', { profile: exportProfile, ...cfg });
     if (!r.ok) return showErr(r.error);
     showOk(t('result.saved') + ' → ' + r.value.path);
@@ -553,6 +793,29 @@ export function DspackSection({ t, packforge }) {
     if (tab !== 'export' || !exportProfile || loadedFor === exportProfile) return;
     void loadConfig(exportProfile, true);
   }, [tab, exportProfile, loadedFor]);
+
+  // v5 r2：切到导出 tab（dspack 形态）/ 换 profile 时自动加载依赖清单（纯本地，无网络）；
+  // 默认勾选「已内嵌」的依赖（装过 vendored 包 round-trip 保持内嵌）；「刷新依赖」可强制重读。
+  const loadDeps = async (name, silent = false) => {
+    if (!name) return;
+    const r = await call('pack/dependencies', { profile: name });
+    if (!r.ok) {
+      if (!silent) showErr(r.error);
+      return;
+    }
+    const list = r.value.deps ?? [];
+    setDeps(list);
+    setDepsFor(name);
+    const sel = {};
+    for (const d of list) if (d.vendored) sel[d.coord] = 'explicit';
+    setVendorSel(sel);
+  };
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (tab !== 'export' || mode !== 'dspack' || !exportProfile || depsFor === exportProfile) return;
+    void loadDeps(exportProfile, true);
+  }, [tab, mode, exportProfile, depsFor]);
 
   // 任务中心面板：展开期间轮询 task/list（600ms），收起即停止。
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -751,6 +1014,62 @@ export function DspackSection({ t, packforge }) {
           : null,
       ),
       h('div', { style: style.group },
+        h('div', { style: style.groupTitle }, t('compat.title')),
+        h('label', { style: style.field },
+          h('span', { style: style.fieldLabel }, t('compat.dshVersions')),
+          h('input', {
+            style: style.input, value: dshVersionsText,
+            placeholder: '0.1.1-rc.2, 0.1.0',
+            list: 'dspack-dshversions',
+            onChange: (e) => setDshVersionsText(e.target.value),
+          }),
+          installedDsh.length
+            ? h('datalist', { id: 'dspack-dshversions' },
+                installedDsh.map((v) => h('option', { key: v, value: v })))
+            : null,
+        ),
+        h('p', { style: style.hint }, t('compat.dshVersionsHint')),
+        h('div', { style: style.field },
+          h('span', { style: style.fieldLabel }, t('compat.launchers')),
+          ...(launchersReg ?? LAUNCHER_IDS.map((id) => ({ id, name: id }))).map(({ id, name }) => {
+            const st = launchersState[id] ?? { mode: 'none', minVersion: '', reason: '' };
+            const setEntry = (patch) => setLaunchersState((s) => ({ ...s, [id]: { ...(s[id] ?? { minVersion: '', reason: '' }), ...patch } }));
+            return h('div', { key: id, style: { ...style.row, flexWrap: 'nowrap' } },
+              h('span', { style: { ...style.line, flex: '0 0 190px', wordBreak: 'break-all' } }, name && name !== id ? `${name}（${id}）` : id),
+              h('select', {
+                style: { ...style.input, flex: '0 0 auto', width: 110 },
+                value: st.mode,
+                onChange: (e) => {
+                  const mode = e.target.value;
+                  if (mode === 'none') setLaunchersState((s) => { const n = { ...s }; delete n[id]; return n; });
+                  else setEntry({ mode });
+                },
+              },
+                h('option', { value: 'none' }, t('launcher.none')),
+                h('option', { value: 'support' }, t('launcher.support')),
+                h('option', { value: 'conflict' }, t('launcher.conflict')),
+              ),
+              st.mode === 'support'
+                ? h('input', {
+                    style: { ...style.input, flex: '0 1 170px' },
+                    placeholder: t('launcher.minVersion'),
+                    value: st.minVersion ?? '',
+                    onChange: (e) => setEntry({ minVersion: e.target.value }),
+                  })
+                : null,
+              st.mode === 'conflict'
+                ? h('input', {
+                    style: { ...style.input, flex: '1 1 auto', minWidth: 120 },
+                    placeholder: t('launcher.reason'),
+                    value: st.reason ?? '',
+                    onChange: (e) => setEntry({ reason: e.target.value }),
+                  })
+                : null,
+            );
+          }),
+        ),
+      ),
+      h('div', { style: style.group },
         h('div', { style: style.groupTitle }, t('group.content')),
         ...CONTENT_TOGGLES.map((k) =>
           h('label', { key: k, style: style.row },
@@ -763,10 +1082,75 @@ export function DspackSection({ t, packforge }) {
           ),
         ),
       ),
+      mode === 'dspack'
+        ? h('div', { style: style.group },
+            h('div', { style: style.marketHead },
+              h('div', { style: style.groupTitle },
+                t('vendor.title'),
+                Object.keys(vendorSel).length
+                  ? h('span', { style: { ...style.line, marginLeft: 8 } }, `（${Object.keys(vendorSel).length} ${t('vendor.selected')}）`)
+                  : null,
+              ),
+              h('div', { style: style.row },
+                h('select', {
+                  style: { ...style.input, width: 220 },
+                  value: vendorMode,
+                  title: t('vendor.mode'),
+                  onChange: (e) => setVendorMode(e.target.value),
+                },
+                  h('option', { value: 'auto' }, t('vendor.mode.auto')),
+                  h('option', { value: 'off' }, t('vendor.mode.off')),
+                  h('option', { value: 'full' }, t('vendor.mode.full')),
+                ),
+                h('button', {
+                  type: 'button', style: style.btnSmall, disabled: !rpc || !exportProfile,
+                  onClick: () => void loadDeps(exportProfile, false),
+                }, t('vendor.reload')),
+              ),
+            ),
+            h('p', { style: style.hint }, t('vendor.hint')),
+            deps == null
+              ? h('p', { style: style.line }, '…')
+              : deps.length === 0
+                ? h('p', { style: style.line }, t('vendor.none'))
+                : h('ul', { style: style.list },
+                    deps.map((d) => h('li', { key: d.coord, style: style.listItem },
+                      h('label', { style: { display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', minWidth: 0 } },
+                        h('input', {
+                          type: 'checkbox',
+                          checked: !!vendorSel[d.coord],
+                          disabled: !d.installed && !d.vendored,
+                          style: { width: 16, height: 16, cursor: d.installed || d.vendored ? 'pointer' : 'not-allowed', accentColor: '#4b7bec', flex: '0 0 auto' },
+                          onChange: (e) => setVendorSel((s) => {
+                            const next = { ...s };
+                            if (e.target.checked) next[d.coord] = 'explicit';
+                            else delete next[d.coord];
+                            return next;
+                          }),
+                        }),
+                        h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 } },
+                          h('span', { style: style.listName }, `${d.pkgName}${d.version ? ` · ${d.version}` : ''}`),
+                          h('span', { style: style.line },
+                            t('vendor.kind.' + d.kind)
+                            + (d.vendored ? ` · ${t('vendor.already')}` : '')
+                            + (!d.installed && !d.vendored ? ` · ${t('vendor.notInstalled')}` : '')),
+                        ),
+                      ),
+                    )),
+                  ),
+          )
+        : null,
       h('div', { style: style.row },
         h('button', { type: 'button', style: style.btn, disabled: !rpc, onClick: doSaveConfig }, t('action.save')),
         h('button', { type: 'button', style: style.btn, disabled: !rpc, onClick: doLoadConfig }, t('action.load')),
         h('button', { type: 'button', style: style.btn, disabled: !rpc, onClick: doExportFromForm }, t('action.export')),
+      ),
+      h('div', { style: style.row },
+        h('button', { type: 'button', style: style.btn, disabled: !sendToChat || upload?.pending, onClick: doAiUpload }, t('action.upload')),
+        upload?.pending ? h('span', { style: style.line }, t('result.pending'))
+          : upload?.ok ? h('span', { style: style.ok }, upload.text)
+          : upload?.ok === false ? h('span', { style: style.err }, upload.error)
+          : h('span', { style: style.hint }, t('upload.hint')),
       ),
     );
 
@@ -781,9 +1165,15 @@ export function DspackSection({ t, packforge }) {
         h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2 } },
           h('span', { style: style.listName }, p.displayName || p.name),
           p.description ? h('span', { style: style.line }, p.description) : null,
-          h('span', { style: style.line }, `${p.author ? p.author + ' · ' : ''}${p.version || '?'}${p.dshVersion ? ' · DSH ' + p.dshVersion : ''}`),
+          h('span', { style: style.line },
+            `${p.author ? p.author + ' · ' : ''}${p.version || '?'}${p.dshVersion ? ' · DSH ' + p.dshVersion : ''}`
+            // 索引派生标记（v5 r2）：声明了 launchers 的包打标，详情弹窗里看完整兼容性徽标
+            + (p.launcherRestricted ? ' · ⚠ ' + t('market.launcherRestricted') : '')),
         ),
-        h('button', { type: 'button', style: style.btnSmall, disabled: !rpc, onClick: () => doInstallFromMarket(p) }, t('action.install')),
+        h('div', { style: style.row },
+          h('button', { type: 'button', style: style.btnSmall, disabled: !rpc || detail?.pending, onClick: () => void doMarketDetail(p) }, t('market.detail')),
+          h('button', { type: 'button', style: style.btnSmall, disabled: !rpc, onClick: () => doInstallFromMarket(p) }, t('action.install')),
+        ),
       )),
     );
     return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } },
@@ -964,6 +1354,73 @@ export function DspackSection({ t, packforge }) {
     );
   };
 
+  // —— 安装确认弹窗（v5 r2 §8.4 判定表第 4 行）：pack/view 预检出 warn 级 launchers 警告时弹出 ——
+  // 复用切换确认弹窗的 overlay / modal / warn 样式；取消 = 放弃安装，确认 = 照常安装（警告放行）。
+  const renderInstallConfirm = () => {
+    if (!installConfirm) return null;
+    const warnings = installConfirm.warnings ?? [];
+    return h('div', { style: style.overlay, onClick: () => setInstallConfirm(null) },
+      h('div', { style: style.modal, onClick: (e) => e.stopPropagation() },
+        h('h3', { style: style.modalTitle }, t('installConfirm.title')),
+        h('p', { style: style.hint }, t('installConfirm.hint')),
+        ...warnings.map((w, i) =>
+          h('div', { key: i, style: style.warn },
+            h('span', { style: style.warnIcon }, '!'),
+            h('span', null, w.message),
+          )),
+        h('div', { style: style.confirmBtns },
+          h('button', { type: 'button', style: style.btn, onClick: () => setInstallConfirm(null) }, t('confirm.cancel')),
+          h('button', { type: 'button', style: style.btnPrimary, onClick: confirmInstall }, t('installConfirm.ok')),
+        ),
+      ),
+    );
+  };
+
+  // —— 市场详情弹窗（v5 r2）：懒加载 manifest 的兼容性徽标 + README ——
+  // 徽标文案沿 style.line（冲突项复用 warn 警示框）；README 复用任务日志的滚动样式。
+  const renderDetail = () => {
+    if (!detail) return null;
+    const close = () => setDetail(null);
+    const pack = detail.pack ?? {};
+    return h('div', { style: style.overlay, onClick: close },
+      h('div', { style: { ...style.modal, maxWidth: 560 }, onClick: (e) => e.stopPropagation() },
+        h('h3', { style: style.modalTitle }, t('market.detailTitle')),
+        detail.pending
+          ? h('p', { style: style.line }, t('market.loading'))
+          : detail.error
+            ? h('p', { style: style.err }, `${t('market.error')}：${detail.error}`)
+            : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 } },
+                h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2 } },
+                  h('span', { style: style.listName }, pack.displayName || pack.name || detail.manifest?.name || ''),
+                  pack.description ? h('span', { style: style.line }, pack.description) : null,
+                  h('span', { style: style.line },
+                    `${pack.author ? pack.author + ' · ' : ''}${pack.version || '?'}${pack.dshVersion ? ' · DSH ' + pack.dshVersion : ''}`),
+                ),
+                // v5 r2 兼容性徽标：需启动器 ≥ x / 声明冲突 / 内嵌 N 个依赖 / 兼容 DSH 版本集
+                (detail.badges ?? []).length
+                  ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+                      detail.badges.map((b, i) => b.kind === 'launcher-conflict'
+                        ? h('div', { key: i, style: style.warn },
+                            h('span', { style: style.warnIcon }, '!'),
+                            h('span', null, badgeText(b)))
+                        : h('p', { key: i, style: style.line }, '· ' + badgeText(b))))
+                  : h('p', { style: style.line }, t('market.r2.none')),
+                detail.readme
+                  ? h('pre', { style: { ...style.taskLog, maxHeight: 260 } }, detail.readme)
+                  : null,
+              ),
+        h('div', { style: style.confirmBtns },
+          h('button', { type: 'button', style: style.btn, onClick: close }, t('tasks.close')),
+          detail.pending || detail.error ? null
+            : h('button', {
+                type: 'button', style: style.btnPrimary, disabled: !rpc,
+                onClick: () => { const p = detail.pack; setDetail(null); void doInstallFromMarket(p); },
+              }, t('action.install')),
+        ),
+      ),
+    );
+  };
+
   // —— 任务中心内嵌面板：就地渲染内存里的任务（task/list 轮询），替代旧版独立 electron/WPF 小窗 ——
   const TASK_STATUS = {
     queued: ['排队中', '#e8a23a'],
@@ -1031,5 +1488,7 @@ export function DspackSection({ t, packforge }) {
     ),
     renderConfirm(),
     renderDialog(),
+    renderInstallConfirm(),
+    renderDetail(),
   );
 }

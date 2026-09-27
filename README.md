@@ -42,10 +42,13 @@ src/core/（vendored 引擎）                    src/locale（可选）
 
 ## 格式契约
 
-- **`.dspack` 容器**（pack-structure v3）：标准 ZIP；根放 `dspack.json`（`{"format":"dspack","version":3}` 标记）+ `manifest.json`。
+- **`.dspack` 容器**（pack-structure v3 / **v3 r2**）：标准 ZIP；根放 `dspack.json`（`{"format":"dspack","version":3}` 标记）+ `manifest.json`。
   - **profile 形态**：机器文件（`package.json` / `pnpm-workspace.yaml` / `pnpm-lock.yaml`）放根，其余内容放 `overrides/`，home 级内容放 `home/`。
   - **dshhome 形态**：整机快照（`profiles/`、`presets/`、`skills/`、`instructions/`、`defaultProfile` 等）。
-- **manifest v5**：`type: "profile" | "dshhome"`（见 `src/core/manifest.js`）。
+  - **vendored 依赖内嵌（v3 r2 §8）**：可选 `vendor/` 目录携带依赖 tarball。导入侧已实现阶段 0 对账 + 逐 tarball `sha256`/`size` 预验（装前拒装）、tarball 落盘 `vendor-blobs/` + 重建 `package.json` 时改写为 `file:` 引用 + 本地优先安装；**闭包完整性检测**（对照随包 `pnpm-lock.yaml`）——覆盖完整自动切 `pnpm install --offline`（零网络、缺件即报错），局部覆盖 `--prefer-offline`（本地与网络互为兜底）；DSHL `vendor:` 方言包按隐式条目消费（直挂 `node_modules/`，依赖剔除，不传给 pnpm）。
+  - **导出侧手动内嵌（v3 r2 §8.6）**：导出面板列出依赖清单（`pack/dependencies` 端点，npm/git/已内嵌三类）供手动勾选，叠加 **vendor 档位**（`.dshpkcfg` `vendor` 键，workspace-config v1 r2）：`auto`（默认，registry 元数据探测死上游自动内嵌 + round-trip 保持）/ `off`（禁用）/ `full`（全部直接依赖，离线包形态）；勾选后按坐标取件——`vendor-blobs/` round-trip 复用原 tarball 字节、npm 先取 registry 原件（字节一致）、取不到时从 `node_modules` 重打包并按规范加 `-local.N` 版本后缀（dependencies 值 / `vendored[].version` / tarball 内 version 三处一致）；体积阈值（>500 MB 警告 / >2 GiB 拒绝打包）。
+  - **导出侧兼容性编辑（v5 r2 §13/§14）**：导出面板「兼容性」组编辑 `dshVersions`（实测兼容版本枚举集，datalist 建议来自本机已装版本，首个即首选、未填 `dshVersion` 时作首选）与 `launchers`（四个已认领启动器 ID 的支持/冲突 + `minVersion`/`reason`，简式/全式归一）；两者持久化进 `.dshpkcfg`（白名单已扩展）并在打包前强校验（`dshVersion ∈ dshVersions` 等错误在导出时报出）。
+- **manifest v5 / v5 r2**：`type: "profile" | "dshhome"`（见 `src/core/manifest.js`）。r2 可选字段：`vendored{}`（§12，导入消费 + 结构校验已实现）、`dshVersions`（§13，交集决策已实现：`dshVersion` 优先 → 集合内最新）、`launchers`（§14，结构校验已实现；安装端判定表待接线 UI 确认流）。前向兼容：未知字段不拒装。
 - **安全规则**（`src/core/security.js`）：`node_modules/`、`dist/`、密钥 / 凭据、嵌套压缩包、`.dshpkcfg`、`.dsh-pack` 等一律不进包。
 - **工作区配置**（specs/workspace-config/v1，`src/core/workspace.js`）：`.dshpkcfg` 为单个 UTF-8 JSON 对象，2 空格缩进 + 结尾换行；只认白名单字段（`name` / `version` / `displayName` / `description` / `author` / `icon` / `dshVersion` / `out` / `exportContent` / `profileName` / `mode` / `content` / `defaultProfile`）；空字符串表示「未填写」。
 - **市场索引**（specs/index/index.md，schemaVersion 2，`src/core/market.js`）：`index.json` 只放 `downloadUrl` + `sha256` + `size` 指针和元数据，完整 manifest / README 从 `packs/<owner>.<repo>/` 懒加载。
@@ -73,6 +76,9 @@ src/core/（vendored 引擎）                    src/locale（可选）
 | `pack/view` | 校验并查看 `.dspack` 内容 |
 | `pack/install` | 安装 `.dspack`（**非阻塞**，立即返回 `taskId`） |
 | `pack/market` | 浏览市场（index 列表 / 详情） |
+| `pack/market-detail` | 市场详情懒加载（manifest + README + r2 徽标：launchers 警示 / vendored / dshVersions） |
+| `launchers/registry` | 启动器注册表（机器可读版 `launchers.json`，1h 缓存；失败回落内置清单）——「兼容性」编辑器的认领 ID + 显示名数据源 |
+| `pack/dependencies` | 列出 profile 依赖清单（npm / git / 已内嵌三类，UI 手动勾选内嵌的数据源） |
 | `plugin/check-update` | About 页检查更新：拉 registry 最新版本，与本地比较返回 `{current, latest, outdated}` |
 | `plugin/open-url` | 用系统默认浏览器打开 http/https 链接（About 页作者 / 仓库 / 求 Star） |
 | `task/list` / `task/get` | 列出 / 查询任务中心任务（状态、阶段时间线、进程输出） |
@@ -131,7 +137,10 @@ pnpm bundle        # 生成 lib/client.js（浏览器 bundle）
 ## 状态
 
 - 自包含重构完成：无 `@dsh-packforge/*` 依赖，仅 UI + 后端（AI 整合包管理已移除）。
+- **v5 r2 / v3 r2 导入侧已实现**：vendored 阶段 0 预检 + 统一安装算法（`--prefer-offline` / 闭包完整自动 `--offline` + `file:` 引用）、DSHL `vendor:` 方言直挂、`dshVersions` 交集决策、r2 字段结构校验（`test/vendored.test.js`）。
+- **v5 r2 导出侧已实现**：依赖清单端点（`pack/dependencies`）+ 导出面板手动勾选内嵌（round-trip 复用 / registry 原件 / 本地重打包 `-local.N` 后缀三处一致）+ vendor 档位（auto/off/full，**full 档沿 lockfile 收齐传递闭包**：registry 原件 → `.pnpm` 重打包回退 → skip 记档；闭包条目对账按 v5 §12 闭包规则放行）+ `dshVersions` / `launchers` 兼容性编辑（`.dshpkcfg` 持久化 + 打包前强校验）+ 体积阈值（>500 MB 警告 / >2 GiB 拒绝）。
 - 多 profile 切换（junction 换指 + 首次迁移脱管 helper）已实现并通过测试。
 - skills / .agent-presets per-profile junction 隔离已实现并通过测试（真实 Windows junction 冒烟：skills/.agent-presets 被跟随、profiles/desktop 被跳过、.dsh-pack 被排除）。
 - 工作区配置 `.dshpkcfg`、市场浏览、任务中心（非阻塞 + 内嵌面板）已接线。
+- **待办（r2）**：安装端闭包 tarball 的 **pnpm store 预填充**（full 闭包包已校验内嵌，但传递依赖尚未喂给 pnpm，故含闭包条目时保守用 `--prefer-offline` 而非 `--offline`）、发版前离线 dry-run 自检、`export` / `install` 端到端真实 pnpm 环境验证。
 - `export` / `install` 端到端仍需真实 profile + pnpm 环境验证。

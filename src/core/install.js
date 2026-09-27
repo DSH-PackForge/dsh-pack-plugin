@@ -1,7 +1,8 @@
 import { parseDspack, decodeText } from './dspack.js';
-import { validateManifest, coordsToPkgDeps, sanitizeSlug } from './manifest.js';
-import { listInstalledDshVersions } from './discovery.js';
+import { validateManifest, coordsToPkgDeps, sanitizeSlug, parseGitCoord, normalizeLaunchers, compareLauncherVersions } from './manifest.js';
+import { listInstalledDshVersions, sortVersionsDesc } from './discovery.js';
 import { storeHomeRel } from './home-store.js';
+import { resolveVendoredPlan, isDialectSpec, directMount, materializeVendorBlobs, blobRelPath, computeOfflineCoverage, allDependencyCoords } from './vendored.js';
 
 /**
  * 一键安装：读取本地/URL 的 .dspack → 校验头 & manifest → 按 type 分支安装。
@@ -51,30 +52,81 @@ export async function installPack(host, opts = {}) {
 
     if (!entries['manifest.json']) throw new Error('整合包缺少 manifest.json（不是有效的 .dspack）');
     const manifest = parseJson(decodeText(entries['manifest.json']));
-    const errors = validateManifest(manifest);
+    // lockText：full 闭包包的 vendored 闭包条目不在直接依赖里，须对照随包 pnpm-lock.yaml 放行（v5 §12 约束 1）
+    const errors = validateManifest(manifest, {
+      lockText: entries['pnpm-lock.yaml'] ? decodeText(entries['pnpm-lock.yaml']) : null,
+    });
     if (errors.length) throw new Error(`整合包不合法：${errors.join('；')}`);
 
     log(`manifest v${manifest.manifestVersion} type=${manifest.type ?? 'profile'} name=${manifest.name}`);
-    if (manifest.manifestVersion === 5 && manifest.type === 'dshhome') {
-      return await installDshHome(host, manifest, entries, opts, progress);
+
+    // 阶段 0（v5 r2 §8.4）：launchers 判定（六行判定表）——警告放行、不硬拒。
+    // selfId 默认官方桌面端（本插件注入 DSH 桌面端），opts.launcherId / opts.launcherVersion 可覆盖；
+    // launcherVersion 无法自报时按「版本未知」轻提示放行（launcher-registry §2）。
+    const launcherSelfId = opts.launcherId || 'official-desktop';
+    const launcherSelfVersion = typeof opts.launcherVersion === 'string' && opts.launcherVersion.trim()
+      ? opts.launcherVersion
+      : null;
+    const launchersResult = {
+      selfId: launcherSelfId,
+      warnings: judgeLaunchers(normalizeLaunchers(manifest.launchers), launcherSelfId, launcherSelfVersion),
+    };
+    for (const w of launchersResult.warnings) {
+      log(`launchers ${w.level === 'warn' ? '警告' : '提示'}：${w.message}`);
     }
-    return await installProfile(host, manifest, entries, opts, progress, profilesRoot);
+    if (launchersResult.warnings.length) log('launchers 警告已放行（用户已确认继续，安装不受影响）');
+
+    // 阶段 0（v5 r2）：vendored 归一 + 对账 + 逐 tarball sha256/size 预验——装前发现优于装到一半。
+    // r1 包（无 vendor/）立即返回 active:false，行为与修订前完全一致。
+    const vendoredPlan = await resolveVendoredPlan(host, manifest, entries, log);
+    // 闭包完整性（v3 §8.3）：vendored 覆盖 lockfile 全部依赖 → 严格 --offline（零网络、缺件即报错）；
+    // 局部覆盖 / 无法判定 → --prefer-offline（本地优先，未覆盖的走 registry 兜底）。
+    if (vendoredPlan.active && entries['pnpm-lock.yaml']) {
+      const coverage = computeOfflineCoverage(decodeText(entries['pnpm-lock.yaml']), vendoredPlan);
+      if (coverage) {
+        // 闭包条目（key ∉ 直接依赖，如 full 档收集的传递依赖）tarball 已校验，但尚未经
+        // store 预填充喂给 pnpm——硬切 --offline 会在闭包元数据解析时失败，保守用 --prefer-offline。
+        const depCoords = allDependencyCoords(manifest);
+        const closureCount = [...vendoredPlan.byCoord.keys()].filter((c) => !depCoords.has(c)).length;
+        if (coverage.complete && closureCount > 0) {
+          log(`vendored 闭包完整（lockfile ${coverage.total} 个包全部内嵌，其中传递闭包 ${closureCount} 个）→ store 预填充待实现，保守本地优先：--prefer-offline`);
+        } else if (coverage.complete) {
+          vendoredPlan.offline = true;
+          log(`vendored 闭包完整（lockfile ${coverage.total} 个包全部内嵌）→ 离线模式：pnpm install --offline`);
+        } else {
+          const head = coverage.missing.slice(0, 5).join(', ');
+          log(`vendored 局部覆盖：lockfile ${coverage.total} 个包中 ${coverage.missing.length} 个未内嵌（${head}${coverage.missing.length > 5 ? '…' : ''}）→ 本地优先：--prefer-offline`);
+        }
+      }
+    }
+    if (manifest.manifestVersion === 5 && manifest.type === 'dshhome') {
+      return await installDshHome(host, manifest, entries, opts, progress, vendoredPlan, launchersResult);
+    }
+    return await installProfile(host, manifest, entries, opts, progress, profilesRoot, vendoredPlan, launchersResult);
   } finally {
     if (tempDir) await host.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
 /** 单 profile（v5）安装：现有语义，装到 profilesRoot/<name>。 */
-async function installProfile(host, manifest, entries, opts, progress, profilesRoot) {
+async function installProfile(host, manifest, entries, opts, progress, profilesRoot, vendoredPlan, launchersResult) {
   const profileName = sanitizeSlug(opts.name || manifest.profileName || manifest.name);
   if (!profileName) throw new Error('无法确定 Profile 名称');
   const target = host.joinPath(profilesRoot, profileName);
   const log = makeLog(opts.onOutput);
 
+  // dshVersions（r2）交集决策：profile 形态做软提示（DSH 基线只硬校验 dshhome 形态）。
+  const dshDecision = await decideDshVersion(host, manifest, opts, log);
+
   // dry-run 只读预览：即便目标已存在也照常返回计划（真实安装才要求 --force）。
   if (opts.dryRun) {
     const exists = (await host.stat(target)) != null;
-    return { profileName, dir: target, manifest, dryRun: true, installed: false, reconcile: null, filesDownloaded: 0, exists };
+    return {
+      profileName, dir: target, manifest, dryRun: true, installed: false, reconcile: null,
+      filesDownloaded: 0, exists, dshVersion: dshDecision?.version ?? null,
+      vendored: summarizeVendored(vendoredPlan, manifest.dependencies ?? {}),
+      launchers: launchersResult,
+    };
   }
 
   if ((await host.stat(target)) != null && !opts.force) {
@@ -89,16 +141,20 @@ async function installProfile(host, manifest, entries, opts, progress, profilesR
 
   try {
     progress('extract', '写入 overrides/ 与 package.json');
-    await materializePackage(host, target, manifest, entries, log);
+    await materializePackage(host, target, manifest, entries, log, vendoredPlan);
+
     // home/ → $DSH_HOME 根（上一级目录内容：全局 skill / 预设），与 overrides/（profile 根）并列。
     await materializeHome(host, host.joinPath(profilesRoot, '..'), entries, profileName, log);
 
     let installed = false;
     let reconcile = null;
+    const mounted = [];
     if (!opts.noInstall) {
       installed = true;
       progress('install', '运行 pnpm install（依赖重建，可能较慢）');
-      await pnpmInstall(host, target, opts, !!entries['pnpm-lock.yaml']);
+      await pnpmInstall(host, target, opts, !!entries['pnpm-lock.yaml'], vendorMode(vendoredPlan));
+      // DSHL 方言依赖：pnpm 之后直挂进 node_modules（须在层栈对账之前）
+      mounted.push(...await mountDialectDeps(host, target, manifest.dependencies ?? {}, vendoredPlan, log));
       reconcile = await reconcileProfile(host, target, manifest);
       if (reconcile.missing.length > 0) {
         throw new Error(
@@ -113,7 +169,12 @@ async function installProfile(host, manifest, entries, opts, progress, profilesR
     const filesDownloaded = await downloadFiles(host, target, files, log);
 
     progress('done', profileName);
-    return { profileName, dir: target, manifest, dryRun: false, installed, reconcile, filesDownloaded };
+    return {
+      profileName, dir: target, manifest, dryRun: false, installed, reconcile, filesDownloaded,
+      dshVersion: dshDecision?.version ?? null,
+      vendored: summarizeVendored(vendoredPlan, manifest.dependencies ?? {}, mounted),
+      launchers: launchersResult,
+    };
   } catch (e) {
     await host.rm(target, { recursive: true, force: true }).catch(() => {});
     throw e;
@@ -121,12 +182,12 @@ async function installProfile(host, manifest, entries, opts, progress, profilesR
 }
 
 /** dshhome（v5）安装：整个 DSH_HOME 快照，顺序「先装 DSH → 建 home → 逐 profile → home 级资源 → 指针下载」。 */
-async function installDshHome(host, manifest, entries, opts, progress) {
+async function installDshHome(host, manifest, entries, opts, progress, vendoredPlan, launchersResult) {
   const log = makeLog(opts.onOutput);
 
-  // ① 先确保 dshVersion 的 DSH 已安装：多个 profile 的 bundle 都靠安装基线解析。
-  await ensureDsh(host, manifest, opts);
-  if (manifest.dshVersion) log(`DSH 基线 ${manifest.dshVersion} 已就绪`);
+  // ① 先确保 dshVersion / dshVersions（r2 交集决策）选定的 DSH 已安装：多个 profile 的 bundle 都靠安装基线解析。
+  const dshDecision = await ensureDsh(host, manifest, opts);
+  if (dshDecision) log(`DSH 基线 ${dshDecision.version} 已就绪（来源：${dshDecision.source}）`);
 
   const homeRoot = opts.home ? host.resolvePath(opts.home) : host.joinPath(host.homedir(), '.dsh');
   log(`目标 DSH_HOME：${homeRoot}`);
@@ -136,6 +197,9 @@ async function installDshHome(host, manifest, entries, opts, progress) {
     return {
       type: 'dshhome', dir: homeRoot, manifest, dryRun: true, installed: false, exists,
       profiles: Object.keys(manifest.profiles), defaultProfile: manifest.defaultProfile, filesDownloaded: 0,
+      dshVersion: dshDecision?.version ?? null,
+      vendored: summarizeVendored(vendoredPlan, aggregateDeps(manifest)),
+      launchers: launchersResult,
     };
   }
 
@@ -151,14 +215,16 @@ async function installDshHome(host, manifest, entries, opts, progress) {
   try {
     // ② 逐 profile：overrides/profiles/<name>/ 落盘 → pnpm install → 对账（各自独立）
     const installed = [];
+    const mountedAll = [];
     for (const [name, unit] of Object.entries(manifest.profiles)) {
       const profileDir = host.joinPath(homeRoot, 'profiles', name);
       progress('extract', `写入 profile「${name}」`);
-      await materializeProfile(host, profileDir, name, unit, entries, log);
+      await materializeProfile(host, profileDir, name, unit, entries, log, vendoredPlan);
 
       if (!opts.noInstall) {
         progress('install', `运行 pnpm install（${name}，可能较慢）`);
-        await pnpmInstall(host, profileDir, opts, !!entries['pnpm-lock.yaml']);
+        await pnpmInstall(host, profileDir, opts, !!entries['pnpm-lock.yaml'], vendorMode(vendoredPlan));
+        mountedAll.push(...await mountDialectDeps(host, profileDir, unit.dependencies ?? {}, vendoredPlan, log));
         const reconcile = await reconcileProfile(host, profileDir, unit);
         if (reconcile.missing.length > 0) {
           throw new Error(
@@ -186,6 +252,9 @@ async function installDshHome(host, manifest, entries, opts, progress) {
     return {
       type: 'dshhome', dir: homeRoot, manifest, dryRun: false, installed: true,
       profiles: installed, defaultProfile: manifest.defaultProfile, filesDownloaded,
+      dshVersion: dshDecision?.version ?? null,
+      vendored: summarizeVendored(vendoredPlan, aggregateDeps(manifest), mountedAll),
+      launchers: launchersResult,
     };
   } catch (e) {
     await host.rm(homeRoot, { recursive: true, force: true }).catch(() => {});
@@ -193,14 +262,136 @@ async function installDshHome(host, manifest, entries, opts, progress) {
   }
 }
 
-/** 检查 dshVersion 是否已安装（未钉定则跳过）；未装报错提示先用启动器装。 */
-async function ensureDsh(host, manifest, opts) {
-  if (!manifest.dshVersion) return;
-  const installed = opts.installedDshVersions ?? (await listInstalledDshVersions(host));
-  if (!Array.isArray(installed) || !installed.includes(manifest.dshVersion)) {
-    const have = Array.isArray(installed) ? installed.join(', ') || '无' : '未知';
-    throw new Error(`dshhome 依赖 DSH ${manifest.dshVersion}，但本机未安装（已装：${have}）。请先用启动器安装该版本后再导入。`);
+/** dshhome 各 profile 依赖坐标并集（vendored 摘要用）。 */
+function aggregateDeps(manifest) {
+  const out = {};
+  for (const u of Object.values(manifest.profiles ?? {})) Object.assign(out, u?.dependencies ?? {});
+  return out;
+}
+
+/**
+ * launchers 判定（v3 §8.4 六行判定表）：按归一化后的 launchers map 评估当前安装端，
+ * 产出警告列表（警告放行、不硬拒——调用方逐条 log 并透出 result.launchers 供 UI 确认）。
+ *
+ * | 条目 / 查表结果 | 行为 |
+ * | --- | --- |
+ * | supported:true，无 minVersion | 静默 |
+ * | supported:true，本启动器版本 ≥ minVersion | 静默 |
+ * | supported:true，版本不足 / 版本未知 | 轻提示（info） |
+ * | supported:false | 重警告（warn，显示 reason） |
+ * | 未列出，map 无任何 supported:true（纯黑名单） | 静默 |
+ * | 未列出，map 有 supported:true（白名单） | 轻提示（info，列出支持项） |
+ *
+ * @param {object} normalized normalizeLaunchers 归一化后的 map
+ * @param {string} selfId 当前安装端启动器 ID（launcher-registry §1）
+ * @param {string|null} selfVersion 当前启动器自报版本（无法自报时 null → 按「版本未知」处理）
+ * @returns {{ level: 'info'|'warn', message: string }[]}
+ */
+export function judgeLaunchers(normalized, selfId, selfVersion) {
+  const warnings = [];
+  const map = normalized && typeof normalized === 'object' && !Array.isArray(normalized) ? normalized : {};
+  const ids = Object.keys(map);
+  if (!ids.length) return warnings; // launchers 缺省 = 通用包（现状不变）
+
+  const self = map[selfId];
+  if (self) {
+    if (self.supported === false) {
+      // 判定表第 4 行：重警告（显示 reason）→ 放行
+      warnings.push({
+        level: 'warn',
+        message: self.reason
+          ? `包作者声明不支持当前启动器「${selfId}」：${self.reason}`
+          : `包作者声明不支持当前启动器「${selfId}」（未提供原因）`,
+      });
+    } else if (self.minVersion) {
+      // 判定表第 2/3 行：版本达标静默；不足或未知（启动器无法自报）轻提示放行
+      const known = typeof selfVersion === 'string' && selfVersion.trim();
+      if (!known || compareLauncherVersions(selfVersion, self.minVersion) < 0) {
+        warnings.push({
+          level: 'info',
+          message: `需要 ${selfId} ≥ ${self.minVersion}（当前${known ? `：${selfVersion}` : '版本未知'}），可能存在兼容问题`,
+        });
+      }
+    }
+    // 判定表第 1 行：supported:true 且无 minVersion → 静默
+  } else {
+    // 未列出（三态第三态）：纯黑名单静默；白名单轻提示列出支持项
+    const supportedIds = ids.filter((id) => map[id]?.supported === true);
+    if (supportedIds.length) {
+      warnings.push({
+        level: 'info',
+        message: `本整合包声明支持：${supportedIds.join('、')}（未声明当前启动器「${selfId}」，仅供参考）`,
+      });
+    }
   }
+  return warnings;
+}
+
+/** dshVersions（r2 §13）交集决策（确定性，永有唯一答案）：
+ * dshVersions ∩ 本机已装 ≠ ∅ → 命中多个时优先 dshVersion 指定者、其次集合内最新；
+ * 无交集 → null（调用方按 dshVersion 提示安装）。
+ */
+export function resolveDshVersion(manifest, installedVersions) {
+  const versions = Array.isArray(installedVersions) ? installedVersions : [];
+  if (manifest.dshVersion && versions.includes(manifest.dshVersion)) {
+    return { version: manifest.dshVersion, source: 'dshVersion' };
+  }
+  const hits = (Array.isArray(manifest.dshVersions) ? manifest.dshVersions : []).filter((v) => versions.includes(v));
+  if (hits.length) {
+    const pick = manifest.dshVersion && hits.includes(manifest.dshVersion)
+      ? manifest.dshVersion
+      : sortVersionsDesc(hits)[0];
+    return { version: pick, source: 'dshVersions' };
+  }
+  return null;
+}
+
+/** profile 形态的软决策（不硬校验）：有 dshVersion/dshVersions 声明时记录选定版本或提示未装。 */
+async function decideDshVersion(host, manifest, opts, log) {
+  if (!manifest.dshVersion && !Array.isArray(manifest.dshVersions)) return null;
+  const installed = opts.installedDshVersions ?? (await listInstalledDshVersions(host));
+  const decision = resolveDshVersion(manifest, installed);
+  if (decision) log(`DSH 版本决策：${decision.version}（来源：${decision.source}）`);
+  else log(`提示：声明的 DSH 版本（${manifest.dshVersion || (manifest.dshVersions ?? []).join(' / ')}）本机均未安装，安装后如异常请先装对应版本`);
+  return decision;
+}
+
+/** 检查 dshVersion / dshVersions 选定的 DSH 是否已安装（均未声明则跳过）；未装报错提示先用启动器装。 */
+async function ensureDsh(host, manifest, opts) {
+  if (!manifest.dshVersion && !Array.isArray(manifest.dshVersions)) return null;
+  const installed = opts.installedDshVersions ?? (await listInstalledDshVersions(host));
+  const decision = resolveDshVersion(manifest, installed);
+  if (decision) return decision;
+  const declared = manifest.dshVersion
+    ? `DSH ${manifest.dshVersion}`
+    : `dshVersions [${(manifest.dshVersions ?? []).join(', ')}] 中的任一版本`;
+  const have = Array.isArray(installed) ? installed.join(', ') || '无' : '未知';
+  throw new Error(`dshhome 依赖 ${declared}，但本机未安装（已装：${have}）。请先用启动器安装该版本后再导入。`);
+}
+
+/** vendored 摘要（安装结果 / dry-run 计划展示用）。 */
+function summarizeVendored(plan, deps, mounted = []) {
+  if (!plan?.active) return { active: false, used: [], mounted: [], offline: false };
+  const used = [];
+  for (const coord of Object.keys(deps ?? {})) {
+    const e = plan.byCoord.get(coord);
+    if (e && !e.dialect) used.push(coord);
+  }
+  return { active: true, used, mounted, offline: plan.offline === true };
+}
+
+/** DSHL 方言依赖直挂（v3 §8.3 direct-mount）：pnpm install 之后、层栈对账之前执行。 */
+async function mountDialectDeps(host, target, deps, plan, log) {
+  if (!plan?.active) return [];
+  const mounted = [];
+  for (const [name, spec] of Object.entries(deps ?? {})) {
+    if (!isDialectSpec(spec)) continue;
+    const entry = plan.byCoord.get(name);
+    if (!entry) throw new Error(`方言依赖「${name}」在 vendor/vendor.json 中无对应条目（拒装）`);
+    await directMount(host, target, name, entry, log);
+    mounted.push(name);
+  }
+  return mounted;
 }
 
 /* ------------------------------------------------------------------ */
@@ -237,8 +428,11 @@ export async function verifyIntegrity(host, packPath, opts = {}) {
   }
 }
 
-/** 单 profile：overrides/* 落盘 + 重建 package.json + 快照机器文件。 */
-async function materializePackage(host, dir, manifest, entries, log) {
+/** 单 profile：overrides/* 落盘 + 重建 package.json + 快照机器文件 + vendored tarball 落盘（r2）。 */
+async function materializePackage(host, dir, manifest, entries, log, plan) {
+  // 0) vendored tarball → vendor-blobs/（file: 引用的实体；manifest 不动，改写只发生在重建的 package.json）
+  if (plan?.active) await materializeVendorBlobs(host, dir, plan, Object.keys(manifest.dependencies ?? {}), log);
+
   // 1) overrides/* → profile 根
   for (const [entryPath, data] of Object.entries(entries)) {
     if (!entryPath.startsWith('overrides/')) continue;
@@ -253,6 +447,7 @@ async function materializePackage(host, dir, manifest, entries, log) {
   const base = parseJson(decodeText(entries['package.json'] || new Uint8Array())) ?? {};
   const pkg = base && typeof base === 'object' && !Array.isArray(base) ? base : {};
   pkg.dependencies = coordsToPkgDeps(manifest.dependencies ?? {});
+  applyVendoredSpecs(pkg.dependencies, manifest.dependencies ?? {}, plan);
   pkg.dsh = { ...(pkg.dsh ?? {}), profile: { ...(pkg.dsh?.profile ?? {}), bundles: manifest.bundles ?? [] } };
   const pkgPath = host.joinPath(dir, 'package.json');
   await host.writeTextFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
@@ -288,9 +483,12 @@ async function materializeHome(host, homeRoot, entries, profileName, log) {
 }
 
 /** dshhome 单个 profile：overrides/profiles/<name>/ 落盘 + 以 ProfileUnit 重建 package.json / patch。 */
-async function materializeProfile(host, profileDir, name, unit, entries, log) {
+async function materializeProfile(host, profileDir, name, unit, entries, log, plan) {
   await host.mkdir(profileDir);
   log(`创建 profile 目录：${profileDir}`);
+
+  // 0) vendored tarball → vendor-blobs/（vendor/ 是包级的，各 profile 各放一份 file: 引用实体）
+  if (plan?.active) await materializeVendorBlobs(host, profileDir, plan, Object.keys(unit.dependencies ?? {}), log);
 
   // 1) overrides/profiles/<name>/* → profile 根
   const prefix = `overrides/profiles/${name}/`;
@@ -310,6 +508,7 @@ async function materializeProfile(host, profileDir, name, unit, entries, log) {
     dependencies: coordsToPkgDeps(unit.dependencies ?? {}),
     dsh: { profile: { bundles: unit.bundles ?? [] } },
   };
+  applyVendoredSpecs(pkg.dependencies, unit.dependencies ?? {}, plan);
   const pkgPath = host.joinPath(profileDir, 'package.json');
   await host.writeTextFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
   log(`重建 package.json → ${pkgPath}`);
@@ -335,7 +534,35 @@ async function materializeHomeOverrides(host, homeRoot, entries, log) {
   }
 }
 
-async function pnpmInstall(host, target, opts, frozen) {
+/**
+ * vendored 坐标在**重建的 package.json** 上的 spec 决策（v3 §8.3 统一算法）：
+ * - 显式 vendored 条目 → `file:vendor-blobs/...`（本地优先；其余坐标照常走 registry，互为兜底）；
+ * - DSHL 方言 spec（`vendor:<file>.tgz`）→ 从依赖中剔除（tarball 直挂，不传给 pnpm）；
+ * - 非 vendored 坐标 → 原样。manifest 不动（规范禁止安装端改写包内字节，改写仅发生在重建产物上）。
+ */
+function applyVendoredSpecs(pkgDeps, manifestDeps, plan) {
+  if (!plan?.active) return;
+  for (const [coord, spec] of Object.entries(manifestDeps ?? {})) {
+    const entry = plan.byCoord.get(coord);
+    const git = parseGitCoord(coord);
+    const pkgName = git ? git.name : coord;
+    if (isDialectSpec(spec)) {
+      delete pkgDeps[pkgName]; // 方言：直挂，不传给 pnpm（v3 §8.5）
+      continue;
+    }
+    if (entry && !entry.dialect) {
+      pkgDeps[pkgName] = `file:${blobRelPath(coord, entry)}`;
+    }
+  }
+}
+
+/** vendored 安装模式：false=纯网络（r1）| 'prefer'=本地优先 | 'offline'=严格离线（闭包完整）。 */
+function vendorMode(plan) {
+  if (!plan?.active) return false;
+  return plan.offline ? 'offline' : 'prefer';
+}
+
+async function pnpmInstall(host, target, opts, frozen, mode) {
   // 依赖重建可能较慢（尤其 git 依赖走 git clone），给足超时但绝不无限卡死。
   const timeoutMs = opts.timeoutMs > 0 ? opts.timeoutMs : 10 * 60 * 1000;
   // 优先走 host.pnpm（桌面端复用 DSH 自带 node+pnpm，不依赖用户 PATH 上的 node/pnpm）；无此能力则回退 PATH 上的 pnpm。
@@ -343,11 +570,16 @@ async function pnpmInstall(host, target, opts, frozen) {
     ? (args, o) => host.pnpm(args, o)
     : (args, o) => host.exec('pnpm', args, o);
   const args = ['install'];
-  if (frozen) args.push('--frozen-lockfile');
+  // vendored 激活（r2 统一算法）：--prefer-offline 本地优先（未覆盖的走 registry 兜底）；
+  // 闭包完整时升级为严格 --offline（零网络、缺件即报错）。file: spec 与随包 lockfile 必然
+  // 不匹配，两种模式都跳过 --frozen-lockfile（否则每次都白跑一遍 frozen 再回退）。
+  if (mode === 'offline') args.push('--offline');
+  else if (mode === 'prefer') args.push('--prefer-offline');
+  if (frozen && !mode) args.push('--frozen-lockfile');
   if (opts.registry) args.push('--registry', opts.registry);
   let r = await runPnpm(args, { cwd: target, timeoutMs, onOutput: opts.onOutput });
   // frozen-lockfile 失配时回退普通安装（v4/v5 导入语义）
-  if (frozen && r.status !== 0) {
+  if (frozen && !mode && r.status !== 0) {
     r = await runPnpm(['install', ...(opts.registry ? ['--registry', opts.registry] : [])], { cwd: target, timeoutMs, onOutput: opts.onOutput });
   }
   if (r.error) throw new Error(`pnpm install 执行失败：${r.error}`);
