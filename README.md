@@ -37,7 +37,7 @@ src/core/（vendored 引擎）                    src/locale（可选）
 ```
 
 - **RPC 通道**：`CHANNEL = '/dsh-pack'`（`src/channel.js`，host / client 共用）。host 侧自建**前缀路由**挂在 `ctx.webServer` 上（不走 `ctx.connection.rpc.handle`——它对第三方插件不可用），并用 `ctx.connection` 的请求授权栅栏挡住非 client 调用；client 侧 `rpc.call` 静默收发，**不在聊天栏显示任何工具调用**。
-- **Host DI 边界**：`src/core/` 不直接碰 `node:fs` / `node:crypto` / `node:child_process`，一律经 `Host` 接口（`src/host.js`）注入，`src/host-node.js` 是 Node 实现。core 因此可脱离 DSH 单独测试。
+- **Host DI 边界**：`src/core/` 不直接碰 `node:fs` / `node:crypto` / `node:child_process`，一律经 `Host` 接口（`src/host.js`）注入，`src/host-node.js` 是 Node 实现。core 因此可脱离 DSH 单独测试。除必选能力（读写文件 / `download` / `exec` 等）外，Host 还提供**可选能力**（如 `pnpm(args, opts)`）：默认回退 `exec('pnpm', …)`（依赖 PATH），宿主可覆盖为「复用 DSH 自带 node+pnpm 运行时（`resources/runtime/`）」，让桌面端装包重建依赖时不依赖用户机器 PATH 上的 node/pnpm。`core` 用 `typeof host.pnpm === 'function'` 探测，旧宿主无此能力时自动回退，行为不变。
 - **多 profile 切换（junction 换指）**：把 `profiles/desktop` 换成 junction 指向目标 profile，切换 = `unlink` 旧 junction + `symlink(target, 'junction')`。**红线：用 `unlink`（lstat 语义）删 junction，绝不 `rm -r`**——后者在 Windows 上会递归删掉 junction 目标目录的内容。
 
 ## 格式契约

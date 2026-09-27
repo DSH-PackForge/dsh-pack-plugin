@@ -103,6 +103,15 @@ export class Host {
     throw new Error('Host.exec 未实现');
   }
 
+  /**
+   * 运行 pnpm install（可选能力）。默认回退到 `exec('pnpm', …)`（依赖 PATH）；宿主可覆盖为
+   * 「复用自带 node+pnpm 运行时」（如 DSH 桌面端的 `resources/runtime/`），从而不依赖用户机器 PATH。
+   * 返回与 exec 相同的 { status, error? }。
+   */
+  async pnpm(_args, _opts) {
+    return this.exec('pnpm', _args, _opts);
+  }
+
   /** 下载 http(s) URL 到本地文件。 */
   async download(_url, _destAbs) {
     throw new Error('Host.download 未实现');

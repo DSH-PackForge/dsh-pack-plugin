@@ -166,20 +166,34 @@ export class NodeHost {
    * 返回与 exec 相同的 `{ status, error? }`。
    */
   async pnpm(args, opts = {}) {
+    // 显式代理/'direct' 对两条路径一致生效：先构造一次带代理的基准 env，再各自补充。
+    const baseEnv = { ...process.env };
+    this.#applyProxyEnv(baseEnv);
+    const runPathPnpm = () => this.#spawnRun('pnpm', args, {
+      cwd: opts.cwd,
+      timeoutMs: opts.timeoutMs,
+      onOutput: opts.onOutput,
+      env: baseEnv,
+      shell: process.platform === 'win32',
+    });
+
     const entry = resolvePnpmEntry();
     if (entry && fs.existsSync(entry)) {
       // process.execPath 即桌面端可执行文件（electron），加 ELECTRON_RUN_AS_NODE=1 让其以纯 node
       // 模式跑 pnpm.mjs——与 DSH 自身 node.cmd 的做法一致；非 Electron（node 直跑）时该变量无害。
-      const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
-      this.#applyProxyEnv(env);
-      return await this.#spawnRun(process.execPath, [entry, ...(args ?? [])], {
+      const env = { ...baseEnv, ELECTRON_RUN_AS_NODE: '1' };
+      const r = await this.#spawnRun(process.execPath, [entry, ...(args ?? [])], {
         cwd: opts.cwd,
         timeoutMs: opts.timeoutMs,
         onOutput: opts.onOutput,
         env,
       });
+      // 降级：自带运行时「根本没启动起来」（spawn 失败/被替换，status 为 null）才回退 PATH；
+      // 超时或 pnpm 已运行但退出码非 0（真实安装失败）则不回退，避免换版本重跑造成二次报错/翻倍等待。
+      if (r.status === null && !r.timedOut) return await runPathPnpm();
+      return r;
     }
-    return await this.exec('pnpm', args, opts);
+    return await runPathPnpm();
   }
 
   /** 把显式代理配置透传给子进程（pnpm 原生认 HTTP(S)_PROXY）。'direct' 清除代理变量强制直连；
@@ -219,15 +233,17 @@ export class NodeHost {
 
       let settled = false;
       let timer = null;
+      let timedOut = false;
       const finish = (status, error) => {
         if (settled) return;
         settled = true;
         if (timer) clearTimeout(timer);
-        resolve({ status, error });
+        resolve({ status, error, timedOut });
       };
 
       if (opts.timeoutMs > 0) {
         timer = setTimeout(() => {
+          timedOut = true;
           // 结束整个进程树：Windows 下 shell:true 时 child 是 cmd.exe，需 taskkill /T
           if (child.pid) {
             if (process.platform === 'win32') {

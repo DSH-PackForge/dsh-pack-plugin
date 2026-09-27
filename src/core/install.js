@@ -334,13 +334,17 @@ async function materializeHomeOverrides(host, homeRoot, entries, log) {
 async function pnpmInstall(host, target, opts, frozen) {
   // 依赖重建可能较慢（尤其 git 依赖走 git clone），给足超时但绝不无限卡死。
   const timeoutMs = opts.timeoutMs > 0 ? opts.timeoutMs : 10 * 60 * 1000;
+  // 优先走 host.pnpm（桌面端复用 DSH 自带 node+pnpm，不依赖用户 PATH 上的 node/pnpm）；无此能力则回退 PATH 上的 pnpm。
+  const runPnpm = typeof host.pnpm === 'function'
+    ? (args, o) => host.pnpm(args, o)
+    : (args, o) => host.exec('pnpm', args, o);
   const args = ['install'];
   if (frozen) args.push('--frozen-lockfile');
   if (opts.registry) args.push('--registry', opts.registry);
-  let r = await host.exec('pnpm', args, { cwd: target, timeoutMs, onOutput: opts.onOutput });
+  let r = await runPnpm(args, { cwd: target, timeoutMs, onOutput: opts.onOutput });
   // frozen-lockfile 失配时回退普通安装（v4/v5 导入语义）
   if (frozen && r.status !== 0) {
-    r = await host.exec('pnpm', ['install', ...(opts.registry ? ['--registry', opts.registry] : [])], { cwd: target, timeoutMs, onOutput: opts.onOutput });
+    r = await runPnpm(['install', ...(opts.registry ? ['--registry', opts.registry] : [])], { cwd: target, timeoutMs, onOutput: opts.onOutput });
   }
   if (r.error) throw new Error(`pnpm install 执行失败：${r.error}`);
   if (r.status !== 0) throw new Error(`pnpm install 失败（退出码 ${r.status ?? '未知'}）`);
