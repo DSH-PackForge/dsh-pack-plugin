@@ -16,7 +16,7 @@
 // MutationObserver 重新认领，label 与图标永不脱节。
 //
 // 等到 settings.section 长出 icon 字段那天，删掉本模块即可。
-import { SECTION_FOCUS_HOOK } from './ball-settings.js';
+import { SECTION_FOCUS_HOOK, SECTION_LABEL_HOOK, SECTION_WANT_FLAG } from './ball-settings.js';
 
 /** 标记「这一行导航属于本插件」的属性名。 */
 export const NAV_ICON_MARKER = 'data-dspack-nav-icon';
