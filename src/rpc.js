@@ -12,6 +12,7 @@
 //   { ok:true, value } | { ok:false, error:{ code, message, details } }
 import { ENDPOINTS } from './endpoints.js';
 import { CHANNEL } from './channel.js';
+import { BALL_SCRIPT_PATH, readBallAsset } from './ball-host.js';
 
 export const ok = (value) => ({ ok: true, value });
 export const fail = (code, message, details = {}) => ({
@@ -81,6 +82,30 @@ export function registerRpc(ctx, runtime) {
       if (rejection) {
         res.writeHead(rejection);
         res.end(rejection === 401 ? 'unauthorized' : 'forbidden');
+        return;
+      }
+      // GET 只服务悬浮球脚本（同一 prefix 路由，不新增路由以免撞 duplicate 检查）：
+      // /dsh-pack/ball.js → lib/ball.js 产物。no-store 避免升级后浏览器仍用旧球。
+      if (req.method === 'GET') {
+        const pathname = (() => {
+          try { return new URL(req.url ?? '', 'http://x').pathname; } catch { return ''; }
+        })();
+        if (pathname === BALL_SCRIPT_PATH) {
+          const asset = await readBallAsset();
+          if (!asset) {
+            res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+            res.end('ball.js 未构建：请先运行 npm run bundle');
+            return;
+          }
+          res.writeHead(200, {
+            'content-type': 'application/javascript; charset=utf-8',
+            'cache-control': 'no-store',
+          });
+          res.end(asset.bytes);
+          return;
+        }
+        res.writeHead(405, { 'content-type': 'text/plain; charset=utf-8' });
+        res.end('method not allowed');
         return;
       }
       if (req.method !== 'POST') {

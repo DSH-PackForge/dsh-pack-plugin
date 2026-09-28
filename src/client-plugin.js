@@ -1,8 +1,9 @@
-// DSH 客户端插件入口：只做「设置面板 section」，UI 经 ctx.connection.rpc 直连宿主（静默，不进聊天栏）。
+// DSH 客户端插件入口：设置面板 section + 悬浮球兜底挂载，UI 经 ctx.connection.rpc 直连宿主（静默，不进聊天栏）。
 //
 // 纯 UI + 后端模型：这里不再 import 任何 core / node 内建；宿主 endpoint 层承担全部业务逻辑。
 import { registerSettingsSection } from './settings.js';
 import { createRpc } from './client-rpc.js';
+import { mountBall } from './ball.js';
 
 export const name = 'dsh-packforge';
 
@@ -13,6 +14,19 @@ export function apply(ctx) {
   console.error('[dsh-pack][client] apply slots=' + (!!ctx?.slots) + ' locale=' + (!!ctx?.locale) + ' connection=' + (!!ctx?.connection) + ' rpc=' + (!!ctx?.connection?.rpc) + ' sessions=' + (!!ctx?.sessions) + ' uiWorkspace=' + (!!ctx?.uiWorkspace));
   const rpc = createRpc(ctx);
   registerSettingsSection(ctx, { rpc, sendToChat: makeSendToChat(ctx) });
+  mountBallFallback();
+}
+
+// 悬浮球的第二道保险：正常情况由宿主注入 index.html 后自己挂（那条路不经过任何前端插件，
+// 更抗「别人把 UI 拆了」）；这里只是万一注入行没落地（比如桌面壳的注入表在宿主启动时就收集
+// 完了）时补一个。mountBall 以 window.__dspackBall 为幂等守卫，重复调用只会拿回既有句柄，
+// 不会挂出两个球；点击动作默认就是「打开官方设置页」。
+function mountBallFallback() {
+  try {
+    mountBall();
+  } catch (error) {
+    console.error('[dsh-pack][client] 悬浮球挂载失败（不影响设置面板）:', error);
+  }
 }
 
 // 导出页「上传到 GitHub」用的 sendToChat：新建会话 → 切到该会话视图 → 借 session scope 直接

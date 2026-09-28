@@ -7,6 +7,7 @@
 //   - ctx.profileContext 直接给出 home/当前 profile 事实（零猜路径）。
 import { resolveRuntime } from './runtime.js';
 import { registerRpc } from './rpc.js';
+import { registerBall } from './ball-host.js';
 import { getHost } from './host.js';
 import { readState } from './profiles.js';
 import { createDspackSkillProvider } from './skills/index.js';
@@ -19,6 +20,9 @@ export function apply(ctx) {
   // UI ↔ 后端直连 RPC（设置面板按钮走这里，静默、不进聊天栏）。
   const runtime = resolveRuntime(ctx);
   registerRpc(ctx, runtime);
+  // 悬浮球：绕过设置页/侧边栏的独立入口（整合包把侧边栏搞坏时仍进得来）。
+  // 注入行须尽早注册 —— 桌面壳的注入表是宿主启动时一次性收集的。
+  registerBall(ctx);
   // 启动时把已存配置里的代理地址应用到 NodeHost（设置项覆盖环境变量）；读不到/异常不阻塞启动。
   void (async () => {
     try {

@@ -82,8 +82,20 @@ src/core/（vendored 引擎）                    src/locale（可选）
 | `plugin/check-update` | About 页检查更新：拉 registry 最新版本，与本地比较返回 `{current, latest, outdated}` |
 | `plugin/open-url` | 用系统默认浏览器打开 http/https 链接（About 页作者 / 仓库 / 求 Star） |
 | `task/list` / `task/get` | 列出 / 查询任务中心任务（状态、阶段时间线、进程输出） |
+| `GET /dsh-pack/ball.js` | 下发悬浮球脚本（同一 prefix 路由，非 RPC；`no-store`） |
 
 所有端点返回 `{ok:true, value} | {ok:false, error:{code,message,details}}`；非阻塞端点立即返回 `{taskId}`，执行进度经任务中心（内存注册表，`task/list` / `task/get` RPC 直读）呈现。
+
+### 悬浮球（独立入口）
+
+整合包会装进各种 client 插件，**有的会把侧边栏或设置页搞坏** —— 那时用户进不去设置界面，连换包、卸载都做不到。所以入口不能挂在 DSH 的 slot / React 树里：
+
+- **由宿主注入**（[ball-host.js](dsh-pack-plugin/src/ball-host.js)）：走 `webserver/index-inject` 结构化行（桌面壳唯一生效通道）+ `webServer.tapIndex`（web 形态兜底），二者靠标记去重；行内容用**内联 script** 而非 `script-src` 行 —— 官方页面解释器对两类行处理不对称（内联无 await 不可能"加载失败"，`script-src` 失败会 reject 成致命错误把页面带下水），所以自己建 `<script src>` 并吞掉 onerror。宿主活在 Node 进程里，别的插件把前端拆了球还在。
+- **球本体**（[ball.js](dsh-pack-plugin/src/ball.js) → `lib/ball.js`，esbuild iife）：`position:fixed` 自建 DOM、纯尺寸驱动；拖拽用 document 级 pointer 监听 + 3px 点击阈值，拖拽中 `transition:none`、松手 `settle()` 吸附（四分之一区域、横纵轴独立、可组合出四角）；位置**只存「吸附边 + 离边偏移」**（resize 仍贴边，脏数据夹回可视区）；贴左整体镜像；关键样式 `!important` 顶回宿主皮肤的几何特征拦截。
+- **点击 = 打开官方设置页**（[ball-settings.js](dsh-pack-plugin/src/ball-settings.js)）：官方设置界面本身就是完整的弹窗，诉求只是「进不去」，不是「没有这个页面」，所以不另造页面。`SettingsRoot` 用组件内部 state 管开合、**对外没有 API**（`ctx.remote.settings.openSettingsDocument()` 是「在本地打开设置文档」，不是打开这个弹窗），唯一的路是点它注册到 `settings.trigger` 的按钮——好在那个按钮属性是语义化的 `button[aria-haspopup="dialog"][aria-expanded]`（无哈希类名），而**合成 `click()` 不要求元素可见**：侧边栏被主题藏起来、被挤扁、变轨道态，只要弹窗组件还挂着就点得动。点开后再把导航切到本插件分区（认 `data-dspack-nav-icon` 标记，不依赖文案）。
+- 挂载有两道保险：宿主注入（主）+ 客户端插件 `mountBall()`（补，幂等守卫去重）。
+- 已知边界：若坏插件让侧边栏那棵 slot 子树整个崩掉（React 抛错），设置弹窗与触发按钮都不存在，此时谁也开不了官方设置页——球会如实提示「没找到官方设置入口」，不假装成功。那种场景要的是急救（禁用坏插件）或自建面板，本轮都不做。
+- `window.__dspackBall` 暴露句柄：`openSettings()` / `setAction(fn)` / `showTip()` / `settle()` / `destroy()`，要接别的动作直接换。
 
 ## 结构
 
@@ -104,6 +116,10 @@ src/                       host 插件 + client 插件源码
   packaged.js              打包态判定（切换进度窗走 electron GUI 还是 WPF）
   settings.js              客户端设置面板（管理 / 导出 / 市场 / 关于 tab + 任务中心面板 + 弹窗）
   client.js / client-plugin.js / client-rpc.js   客户端 bundle 入口 / 插件面（dspackforge）/ rpc 封装
+  ball.js                  悬浮球（纯几何 + mountBall；entry 见 ball-entry.js）
+  ball-settings.js         球的默认动作：点官方触发按钮打开原设置页并切到本插件分区
+  ball-entry.js            悬浮球浏览器入口（自我挂载，打成 lib/ball.js）
+  ball-host.js             悬浮球宿主接线（index 注入行 / tapIndex / 脚本资源读取）
   core/                    vendored 整合包引擎（仅 import fflate）
     index.js               公共 API 出口
     host.js                Host 接口（DI 边界）
@@ -121,8 +137,11 @@ src/                       host 插件 + client 插件源码
     discovery.js           profiles / homes / DSH 版本发现
     home-store.js          home 级换指槽位布局（HOME_ARTIFACT_STORE / storeHomeRel）
 lib/client.js              client 浏览器 bundle（pnpm bundle 生成）
+lib/ball.js                悬浮球浏览器 bundle（pnpm bundle 生成，宿主路由下发）
 cordis.patch.yml           bundle 注入 patch
-scripts/bundle-client.mjs  esbuild 打包脚本
+scripts/bundle-client.mjs  esbuild 打包脚本（client）
+scripts/bundle-host.mjs    esbuild 打包脚本（host，自包含 node 依赖）
+scripts/bundle-ball.mjs    esbuild 打包脚本（悬浮球，浏览器 iife）
 test/                      单元测试（node --test）
 ```
 
@@ -131,7 +150,7 @@ test/                      单元测试（node --test）
 ```bash
 pnpm install
 pnpm test          # 单元测试（node --test）
-pnpm bundle        # 生成 lib/client.js（浏览器 bundle）
+pnpm bundle        # 生成 lib/client.js（浏览器）+ lib/host.js + lib/ball.js（悬浮球）
 ```
 
 ## 状态
