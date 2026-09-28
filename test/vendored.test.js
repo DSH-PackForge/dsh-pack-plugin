@@ -627,6 +627,36 @@ test('listProfileDependencies：三类依赖分类 + vendored 标记 + 已装检
   }
 });
 
+test('listProfileDependencies：npm 范围 spec 折算为已安装精确版本（^ 不进 tarball URL）', async () => {
+  const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'dspack-range-'));
+  try {
+    const dir = path.join(home, 'profiles', 'demo');
+    await fsp.mkdir(path.join(dir, 'node_modules', 'dsh-pet'), { recursive: true });
+    await fsp.writeFile(path.join(dir, 'node_modules', 'dsh-pet', 'package.json'), JSON.stringify({ name: 'dsh-pet', version: '0.2.0' }));
+    await fsp.writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'p', dependencies: { 'dsh-pet': '^0.2.0' } }));
+
+    const deps = await listProfileDependencies(fsHost(), [dir]);
+    const pet = deps.find((d) => d.pkgName === 'dsh-pet');
+    assert.equal(pet.spec, '^0.2.0', '原声明保留在 spec');
+    assert.equal(pet.version, '0.2.0', '范围 spec 应折算为已安装精确版本');
+
+    // 取件 URL 用精确版本，不再带 ^（否则 registry 404 → 误回落 -local.1）
+    const upstreamTgz = buildTarball({ 'package/package.json': '{"name":"dsh-pet","version":"0.2.0"}' });
+    const host = fsHost({
+      async download(url, dest) {
+        assert.equal(url, 'https://registry.npmjs.org/dsh-pet/-/dsh-pet-0.2.0.tgz');
+        await fsp.mkdir(path.dirname(dest), { recursive: true });
+        await fsp.writeFile(dest, upstreamTgz);
+      },
+    });
+    const vr = await collectVendoredForExport(host, [dir], { 'dsh-pet': '^0.2.0' }, { 'dsh-pet': 'explicit' });
+    assert.equal(vr.vendored['dsh-pet'].version, '0.2.0');
+    assert.equal(vr.dependencies['dsh-pet'], '0.2.0');
+  } finally {
+    await fsp.rm(home, { recursive: true, force: true });
+  }
+});
+
 test('collectVendoredForExport：vendor-blobs round-trip → 原字节复用，三处一致', async () => {
   const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'dspack-exp-rt-'));
   try {
@@ -697,7 +727,7 @@ test('collectVendoredForExport：npm 上游消失 → 本地重打包 -local.1 �
     // sha256/size 以重打包后的实际内容为准
     assert.equal(e.sha256, sha256(vr.entries[e.path]));
     assert.equal(e.size, vr.entries[e.path].length);
-    assert.ok(vr.notes.some((n) => n.includes('dsh-pet')), '死上游重打包应有提示');
+    assert.ok(vr.notes.some((n) => n.includes('dsh-pet')), '取件失败重打包应有提示');
   } finally {
     await fsp.rm(home, { recursive: true, force: true });
   }
@@ -760,7 +790,7 @@ test('packProfile：vendorCoords → 导出的 .dspack 含 vendor/ 与 manifest.
 
 /* ------------------- 导出侧：vendor 档位 + dshVersions / launchers ------------------- */
 
-test('expandVendorSelection：off 清空 / auto 死上游补选 / 探测存活不补 / full 全选', async () => {
+test('expandVendorSelection：off 清空 / auto 仅手动+round-trip（不联网探测） / full 全选', async () => {
   const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'dspack-knob-'));
   try {
     const { dir } = await makeProfileWithDeps(home);
@@ -769,20 +799,10 @@ test('expandVendorSelection：off 清空 / auto 死上游补选 / 探测存活�
     const off = await expandVendorSelection(fsHost(), [dir], { 'dsh-pet': 'explicit' }, 'off');
     assert.deepEqual(off.selection, {});
 
-    // auto：dsh-pet 探测 404 → 补选（upstream-missing）；whale-theme round-trip → 补选；git 不探测
-    const deadHost = fsHost({ async download() { throw new Error('下载失败：HTTP 404'); } });
-    const auto = await expandVendorSelection(deadHost, [dir], {}, 'auto');
-    assert.equal(auto.selection['dsh-pet'], 'upstream-missing');
-    assert.equal(auto.selection['github:DViridescent/dafy-whale-theme'], 'explicit');
-    assert.equal(auto.selection['github:Other/theme'], undefined, 'git 依赖不探测');
-
-    // auto：上游存活（元数据 200）→ 不补选；探测失败（非 404）→ 也不补
-    const aliveHost = fsHost({ async download(url, dest) { await fsp.mkdir(path.dirname(dest), { recursive: true }); await fsp.writeFile(dest, '{}'); } });
-    const autoAlive = await expandVendorSelection(aliveHost, [dir], {}, 'auto');
-    assert.equal(autoAlive.selection['dsh-pet'], undefined);
-    const netErrHost = fsHost({ async download() { throw new Error('连接超时'); } });
-    const autoNetErr = await expandVendorSelection(netErrHost, [dir], {}, 'auto');
-    assert.equal(autoNetErr.selection['dsh-pet'], undefined, '探测失败视为未知，跳过');
+    // auto：npm / git 依赖不自动补选（不联网探测）；round-trip 的 whale-theme 复用
+    const auto = await expandVendorSelection(fsHost(), [dir], {}, 'auto');
+    assert.deepEqual(auto.selection, { 'github:DViridescent/dafy-whale-theme': 'explicit' });
+    assert.deepEqual(auto.probed, ['github:DViridescent/dafy-whale-theme']);
 
     // full：全部直接依赖（npm + git + round-trip）
     const full = await expandVendorSelection(fsHost(), [dir], {}, 'full');

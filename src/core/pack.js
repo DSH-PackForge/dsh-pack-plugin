@@ -31,7 +31,7 @@ function checkPackSize(entries, opts, log) {
 
 /**
  * v5 r2：按 vendor 档位 + UI 手动勾选内嵌 vendor/ + 改写 manifest。
- * 档位（workspace-config v1 r2）：`'off'` 禁用；`'auto'`（默认）= 手动 ∪ round-trip ∪ 死上游探测；
+ * 档位（workspace-config v1 r2）：`'off'` 禁用；`'auto'`（默认）= 手动 ∪ round-trip（不联网探测）；
  * `'full'` = 手动 ∪ 全部直接依赖 ∪ 传递闭包（沿 lockText 的 pnpm-lock.yaml 收齐，离线包形态）。
  */
 async function applyVendorSelection(host, manifest, lookupDirs, opts, progress, lockText = null) {

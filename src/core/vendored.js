@@ -286,7 +286,7 @@ export function computeOfflineCoverage(lockText, plan) {
 /* ---------------------------------------------------------------------------
  * 导出侧（v3 §8.6 打包端义务）：依赖清单（供 UI 手动勾选）+ 按选择内嵌 vendored。
  *
- * 设计：**手动选择为主，探测为辅**——UI 经 listProfileDependencies 列出依赖让作者勾选；
+ * 设计：**手动选择为主**——UI 经 listProfileDependencies 列出依赖让作者勾选；
  * 勾选后按坐标类型取件：
  *   - `file:vendor-blobs/...`（装过 vendored 包的 profile）→ 直接复用原 tarball 字节（round-trip）；
  *   - npm 精确版本 → 先试 registry 取原件（字节一致）；取不到（上游消失 / 断网）→ 从
@@ -364,8 +364,15 @@ export async function listProfileDependencies(host, dirs) {
           item.version = git.sha || 'latest';
         }
       }
-      const installedPkg = await host.readTextFile(host.joinPath(dir, 'node_modules', pkgName, 'package.json'));
-      item.installed = installedPkg != null;
+      const installedRaw = await host.readTextFile(host.joinPath(dir, 'node_modules', pkgName, 'package.json'));
+      let installedMeta = null;
+      try { installedMeta = installedRaw ? JSON.parse(installedRaw) : null; } catch { installedMeta = null; }
+      item.installed = installedMeta != null;
+      // npm 范围 spec（`^x.y.z`）不能直接进 registry URL（`^` 会 404），且 vendored 三处一致
+      // 要求精确版本 → 用已安装 node_modules 的真实版本折算。
+      if (item.kind === 'npm' && installedMeta && typeof installedMeta.version === 'string' && installedMeta.version) {
+        item.version = installedMeta.version;
+      }
       // 同名依赖出现在多个 profile（dshhome）：保留首个带 vendor-blobs 的，否则首个
       const key = `${item.coord}`;
       if (seen.has(key)) {
@@ -468,7 +475,10 @@ async function repackageFromPnpmStore(host, lookupDirs, pkgName, version) {
 /** 从 registry 拉 npm 原件 tarball（字节与上游一致）；失败返回 null（调用方回落重打包）。 */
 async function fetchRegistryTarball(host, pkgName, version, registry, log) {
   const base = pkgName.includes('/') ? pkgName.slice(pkgName.lastIndexOf('/') + 1) : pkgName;
-  const url = `${registry}/${pkgName}/-/${base}-${version}.tgz`;
+  // registry 缺省值带尾斜杠（`https://registry.npmjs.org/`），再拼 `/` 会产生双斜杠——部分
+  // registry 会 404。这里归一尾斜杠，保证单斜杠。
+  const root = String(registry).replace(/\/+$/u, '');
+  const url = `${root}/${pkgName}/-/${base}-${version}.tgz`;
   const tmp = await host.mkdtemp('dspack-vendor-');
   try {
     const dest = host.joinPath(tmp, 'pkg.tgz');
@@ -484,28 +494,9 @@ async function fetchRegistryTarball(host, pkgName, version, registry, log) {
 }
 
 /**
- * 探测 npm 上游是否存活（registry 元数据，轻量小文件）：
- * 200 → true；404 → false（上游消失）；探测失败 / 断网 / 宿主无 download → null（未知，跳过不内嵌）。
- */
-async function probeNpmAlive(host, pkgName, version, registry) {
-  if (typeof host.download !== 'function') return null;
-  const url = `${registry}/${pkgName}/${version}`;
-  const tmp = await host.mkdtemp('dspack-probe-');
-  try {
-    const dest = host.joinPath(tmp, 'meta.json');
-    await host.download(url, dest);
-    return true;
-  } catch (e) {
-    return /HTTP 404/.test(String(e?.message ?? e)) ? false : null;
-  } finally {
-    await host.rm(tmp, { recursive: true, force: true }).catch(() => {});
-  }
-}
-
-/**
  * 展开手动选择为最终内嵌清单（vendor 档位，workspace-config v1 r2 / pack-structure v3 §8.6）：
  * - `'off'`：清空（禁用内嵌，手动选择也忽略）；
- * - `'auto'`（默认）：手动选择 ∪ { vendor-blobs round-trip } ∪ { 上游消失的 npm 依赖（探测 404）}；
+ * - `'auto'`（默认）：手动选择 ∪ { vendor-blobs round-trip }——不联网探测，只复用已内嵌与手动勾选；
  * - `'full'`：手动选择 ∪ 全部直接依赖 ∪ 传递闭包（离线包形态；闭包沿 pnpm-lock.yaml 由
  *   collectVendoredForExport 的 closure 阶段收齐，安装端 computeOfflineCoverage 判定完整性）。
  * @returns {{selection: object, probed: string[]}} probed = 自动补选的坐标（供日志/结果展示）。
@@ -513,33 +504,17 @@ async function probeNpmAlive(host, pkgName, version, registry) {
 export async function expandVendorSelection(host, lookupDirs, manualSel, knob, opts = {}) {
   if (knob === 'off') return { selection: {}, probed: [] };
   const mode = knob === 'full' ? 'full' : 'auto';
-  const log = typeof opts.log === 'function' ? opts.log : () => {};
-  const registry = opts.registry || DEFAULT_REGISTRY;
   const selection = { ...(manualSel ?? {}) };
   const probed = [];
 
   const items = await listProfileDependencies(host, lookupDirs);
   for (const item of items) {
     if (Object.hasOwn(selection, item.coord)) continue;
-    if (item.kind === 'vendored') {
-      // round-trip：装过 vendored 包的 profile 默认保持内嵌（字节复用，零探测）
+    if (item.kind === 'vendored' || mode === 'full') {
+      // round-trip：装过 vendored 包的 profile 默认保持内嵌（字节复用，零探测）；
+      // full：直接依赖全部内嵌。
       selection[item.coord] = 'explicit';
       probed.push(item.coord);
-      continue;
-    }
-    if (mode === 'full') {
-      selection[item.coord] = 'explicit';
-      probed.push(item.coord);
-      continue;
-    }
-    // auto：npm 依赖探测上游（git 依赖不探测，视为存活——git ls-remote 依赖 git 环境）
-    if (item.kind === 'npm') {
-      const alive = await probeNpmAlive(host, item.pkgName, item.version, registry);
-      if (alive === false) {
-        selection[item.coord] = 'upstream-missing';
-        probed.push(item.coord);
-        log(`自动内嵌「${item.coord}」：上游 ${item.version} 已消失（registry 404）`);
-      }
     }
   }
   return { selection, probed };
