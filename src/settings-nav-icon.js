@@ -110,6 +110,19 @@ export function navIconCss(maskUrl) {
         if (isOwnNavRow(row.textContent, wanted)) row.setAttribute(NAV_ICON_MARKER, '');
         else row.removeAttribute(NAV_ICON_MARKER);
       }
+      // 悬浮球点开设置前会立一个旗标：弹窗一挂上就立刻把导航切到本插件分区。
+      // 我们比球更早看到 DOM 变化（同一个 MutationObserver），也更认识自己的 label。
+      if (window[SECTION_WANT_FLAG] === true) {
+        const wantedText = String(wanted ?? '').trim();
+        if (wantedText.length > 0) {
+          for (const row of document.querySelectorAll(NAV_ROW_SELECTOR)) {
+            if (!isOwnNavRow(row.textContent, wantedText)) continue;
+            window[SECTION_WANT_FLAG] = false;
+            row.click();
+            break;
+          }
+        }
+      }
     };
 
     // 把一波 DOM mutation 合并成一次 sync，且在下一帧绘制前落地，避免行先闪
@@ -159,10 +172,16 @@ export function installSectionFocusHook(ctx, resolveLabel) {
   };
   const previous = window[SECTION_FOCUS_HOOK] ?? null;
   window[SECTION_FOCUS_HOOK] = focus;
+  // 同时把标签公布出去：球万一拿不到钩子，还能按标签文案自己认行。
+  const previousLabel = window[SECTION_LABEL_HOOK] ?? null;
+  window[SECTION_LABEL_HOOK] = () => String(resolveLabel?.() ?? '');
   if (ctx && typeof ctx.effect === 'function') {
     ctx.effect(() => () => {
       // 只撤掉自己装的那个（热重载期间可能已被新实例替换）
       if (window[SECTION_FOCUS_HOOK] === focus) window[SECTION_FOCUS_HOOK] = previous;
+      if (window[SECTION_LABEL_HOOK] !== null && typeof window[SECTION_LABEL_HOOK] === 'function') {
+        window[SECTION_LABEL_HOOK] = previousLabel;
+      }
     }, 'dsh-packforge: section focus hook');
   }
   return true;

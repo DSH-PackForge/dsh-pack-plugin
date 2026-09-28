@@ -20,7 +20,7 @@
 // lib/ball.js 由 scripts/bundle-ball.mjs 打成浏览器 iife 供宿主路由下发。
 // 注意：这里不 import 任何宿主侧东西（含 channel.js）—— 宿主模块 ball-host.js 也不需要
 // import 本文件，否则整段 DOM 代码会被拖进 lib/host.js。
-import { openSettingsPage } from './ball-settings.js';
+import { openSettingsPage, describeSettingsNav } from './ball-settings.js';
 
 /** 球的边长（正方形，纯尺寸驱动 → 不需要量 DOM，无测量竞态）。 */
 export const BALL_SIZE = 48;
@@ -277,6 +277,15 @@ export function mountBall(opts = {}) {
       }, 2600);
     }
 
+    /** 切分区失败时的提示：把「我看到的导航」一并说出来，省得靠猜（截图就能定位）。 */
+    function focusFailTip() {
+      const info = describeSettingsNav(doc, win);
+      try { console.info('[dspack] 悬浮球切分区失败，诊断：', info); } catch { /* 忽略 */ }
+      const label = info.ownLabel || '整合包';
+      const rows = info.rows.join(' / ') || '（没读到导航）';
+      return `设置已打开，请在左侧选「${label}」；我看到的导航：${rows}`;
+    }
+
     /** 默认动作：打开官方设置页（复用原页面，不自己造一个）。 */
     function openSettings() {
       const result = openSettingsPage(doc, {
@@ -284,7 +293,7 @@ export function mountBall(opts = {}) {
         // 轮询校验没通过（没弹出设置弹窗）才提示：点错/被拦/真的没有入口，都算失败。
         onFail: () => showTip(opts.noTriggerTip || '没找到官方设置入口：侧边栏/设置那棵可能已不可用'),
         // 弹窗开了但没切过去：明确指路，别把人晾在别人的分区上。
-        onFocusFail: () => showTip(opts.focusFailTip || '设置已打开：请在左侧选「整合包」'),
+        onFocusFail: () => showTip(opts.focusFailTip || focusFailTip()),
       });
       if (result === 'no-trigger') {
         showTip(opts.noTriggerTip || '没找到官方设置入口：侧边栏/设置那棵可能已不可用');
@@ -378,6 +387,8 @@ export function mountBall(opts = {}) {
       },
       settle,
       viewport,
+      /** 诊断：设置导航长什么样、钩子/标记在不在（排查「点了没切过去」时用）。 */
+      diag: () => describeSettingsNav(doc, win),
       destroy() {
         win.removeEventListener('resize', onResize);
         detach();
