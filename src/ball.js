@@ -279,9 +279,15 @@ export function mountBall(opts = {}) {
 
     /** 默认动作：打开官方设置页（复用原页面，不自己造一个）。 */
     function openSettings() {
-      const result = openSettingsPage(doc, { win });
+      const result = openSettingsPage(doc, {
+        win,
+        // 轮询校验没通过（没弹出设置弹窗）才提示：点错/被拦/真的没有入口，都算失败。
+        onFail: () => showTip(opts.noTriggerTip || '没找到官方设置入口：侧边栏/设置那棵可能已不可用'),
+        // 弹窗开了但没切过去：明确指路，别把人晾在别人的分区上。
+        onFocusFail: () => showTip(opts.focusFailTip || '设置已打开：请在左侧选「整合包」'),
+      });
       if (result === 'no-trigger') {
-        showTip(opts.noTriggerTip || '没找到官方设置入口：侧边栏/设置那棵已不可用');
+        showTip(opts.noTriggerTip || '没找到官方设置入口：侧边栏/设置那棵可能已不可用');
       }
       return result;
     }

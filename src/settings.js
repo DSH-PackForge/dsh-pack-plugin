@@ -7,7 +7,7 @@
 //   ctx.slots.inject("settings.section", () => ctx.slots.register(options, Component))
 import { createElement as h, useState, useEffect, Fragment } from 'react';
 import { PROFILE_NAME_RE, RESERVED_PROFILE_NAMES } from './channel.js';
-import { installSettingsNavIcon, navIconMaskSvg, navIconMaskUrl } from './settings-nav-icon.js';
+import { installSettingsNavIcon, installSectionFocusHook, navIconMaskSvg, navIconMaskUrl } from './settings-nav-icon.js';
 import { createSectionGate } from './section-gate.js';
 
 const NS = 'dspack';
@@ -333,6 +333,9 @@ export function registerSettingsSection(ctx, packforge = {}) {
   // 导航 tab 图标：settings.section 契约没有 icon 字段，shell 对未知 id 一律
   // 回退齿轮；这里在对话框挂载后把属于本插件的那一行换成 logo（folder-zip）。
   installSettingsNavIcon(ctx, () => t('nav'), navIconMaskUrl(navIconMaskSvg(LOGO_PATH)));
+  // 悬浮球点开设置后要切到本插件分区：把「认标签找那一行」的能力交给客户端插件
+  // （球在页面 DOM 里跑，不该依赖图标标记的时机）。
+  installSectionFocusHook(ctx, () => t('nav'));
 
   // 经 section-gate 注册：register 幂等、disposer 显式持有，热重载时不二次 register，
   // 从而避免命中 SlotCore 的重复 id 校验（dsh-market 同款做法，实测重载不丢入口）。

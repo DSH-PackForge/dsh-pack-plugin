@@ -16,10 +16,10 @@
 // MutationObserver 重新认领，label 与图标永不脱节。
 //
 // 等到 settings.section 长出 icon 字段那天，删掉本模块即可。
+import { SECTION_FOCUS_HOOK } from './ball-settings.js';
 
 /** 标记「这一行导航属于本插件」的属性名。 */
 export const NAV_ICON_MARKER = 'data-dspack-nav-icon';
-
 /**
  * 设置对话框里的导航行。shell 把每个 settings.section 渲染为面板 <nav> 里的
  * 一个 <button>（dsh-client-ui-settings-general 的 SettingsPanel）。
@@ -88,8 +88,7 @@ export function navIconCss(maskUrl) {
  * @param resolveLabel - 本插件当前的 section label（与 settings.section 注册
  *   用同一个 thunk，locale 切换后重新读取，无需重新注册）。
  * @param maskUrl - 图标 mask 的 data URL（navIconMaskUrl 的产物）。
- */
-export function installSettingsNavIcon(ctx, resolveLabel, maskUrl) {
+ */export function installSettingsNavIcon(ctx, resolveLabel, maskUrl) {
   if (typeof document === 'undefined') return;
   if (!ctx || typeof ctx.effect !== 'function') return;
 
@@ -132,4 +131,39 @@ export function installSettingsNavIcon(ctx, resolveLabel, maskUrl) {
       tag.remove();
     };
   }, 'dsh-packforge: settings nav icon');
+}
+
+/**
+ * 安装「切到本插件分区」钩子，供悬浮球调用。
+ *
+ * 为什么需要它：悬浮球在页面 DOM 里找设置入口，但「切到本插件分区」这步不能依赖图标
+ * 标记的时机（标记由 MutationObserver + label 文本匹配产生，可能晚一两帧，也可能因为
+ * label 尚未解析而没打上）。这把「按当前 label 找到本插件那一行并点击」放在客户端插件
+ * 里：它认识自己的分区标签，locale 切换后也立刻反映。
+ *
+ * @param ctx - 客户端 cordis context（用 effect 持有钩子的生命周期）。
+ * @param resolveLabel - 与 settings.section 注册同一个 label thunk。
+ * @returns {boolean} 是否安装（非浏览器环境返回 false）
+ */
+export function installSectionFocusHook(ctx, resolveLabel) {
+  if (typeof document === 'undefined' || typeof window === 'undefined') return false;
+  const focus = () => {
+    const wanted = String(resolveLabel?.() ?? '').trim();
+    if (wanted.length === 0) return false;
+    for (const row of document.querySelectorAll(NAV_ROW_SELECTOR)) {
+      if (!isOwnNavRow(row.textContent, wanted)) continue;
+      row.click();
+      return true;
+    }
+    return false;
+  };
+  const previous = window[SECTION_FOCUS_HOOK] ?? null;
+  window[SECTION_FOCUS_HOOK] = focus;
+  if (ctx && typeof ctx.effect === 'function') {
+    ctx.effect(() => () => {
+      // 只撤掉自己装的那个（热重载期间可能已被新实例替换）
+      if (window[SECTION_FOCUS_HOOK] === focus) window[SECTION_FOCUS_HOOK] = previous;
+    }, 'dsh-packforge: section focus hook');
+  }
+  return true;
 }
