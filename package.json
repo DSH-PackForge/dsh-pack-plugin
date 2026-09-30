@@ -1,6 +1,6 @@
 {
   "name": "@dsh-packforge/dsh-pack-plugin",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "type": "module",
   "description": "DSH 纯方案 B 插件 bundle：.dspack 导出/导入/多 profile，零官方源码改动、零第三方插件",
   "license": "MIT",

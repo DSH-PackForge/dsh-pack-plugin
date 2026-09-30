@@ -1,9 +1,6 @@
 import { scanProfile, selectFiles } from './scan.js';
 import { buildManifest, buildHomeManifest, validateManifest } from './manifest.js';
-import { buildDspack, encodeText, decodeText, dspackMarker, DSPACK_CONTAINER_VERSION } from './dspack.js';
-import { syncWorkspaceSettings } from './pnpm-settings.js';
-import { coverageOfVendored } from './vendored.js';
-import { collectVendoredForExport, listProfileDependencies, expandVendorSelection } from './vendored.js';
+import { buildDspack, encodeText, dspackMarker, DSPACK_CONTAINER_VERSION } from './dspack.js';
 
 // .dspack（pack-structure v3）布局：根只放机器文件；其余用户文件进 overrides/。
 const ROOT_MACHINE = new Set(['package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml']);
@@ -23,59 +20,20 @@ function checkPackSize(entries, opts, log) {
   const limits = opts.sizeLimits ?? { warn: SIZE_WARN_BYTES, max: SIZE_MAX_BYTES };
   const total = Object.values(entries).reduce((s, b) => s + (b?.length ?? 0), 0);
   if (limits.max > 0 && total > limits.max) {
-    throw new Error(`整合包体积 ${fmtBytes(total)} 超过上限 ${fmtBytes(limits.max)}（GitHub Release 单资产上限 2 GiB，见 publishing v1 §8）。请改用 files[] 指针制或减小 vendored 覆盖范围`);
+    throw new Error(`整合包体积 ${fmtBytes(total)} 超过上限 ${fmtBytes(limits.max)}（GitHub Release 单资产上限 2 GiB，见 publishing v1 §8）。请改用 files[] 指针制把重内容按需下载`);
   }
   if (limits.warn > 0 && total > limits.warn) {
-    log(`警告：整合包体积 ${fmtBytes(total)} 超过 ${fmtBytes(limits.warn)}——建议优先 files[] 指针制（重内容按需下载），仅在确需离线时全量 vendoring（publishing v1 §8）`);
+    log(`警告：整合包体积 ${fmtBytes(total)} 超过 ${fmtBytes(limits.warn)}——建议优先 files[] 指针制（重内容按需下载）（publishing v1 §8）`);
   }
   return total;
 }
 
 /**
- * v5 r2：按 vendor 档位 + UI 手动勾选内嵌 vendor/ + 改写 manifest。
- * 档位（workspace-config v1 r2）：`'off'` 禁用；`'auto'`（默认）= 手动 ∪ round-trip（不联网探测）；
- * `'full'` = 手动 ∪ 全部直接依赖 ∪ 传递闭包（沿 lockText 的 pnpm-lock.yaml 收齐，离线包形态）。
+ * 打包前强校验（v5 字段：type 形态、dshVersions ∋ dshVersion、launchers 结构等）
+ * ——错误在导出时报出，不带病出厂。
  */
-async function applyVendorSelection(host, manifest, lookupDirs, opts, progress, lockText = null) {
-  if (opts.vendor === 'off') return null;
-  const log = (s) => { if (typeof opts.onOutput === 'function') opts.onOutput(String(s) + '\n'); };
-  const manual = opts.vendorCoords && typeof opts.vendorCoords === 'object' ? opts.vendorCoords : {};
-  const { selection, probed } = await expandVendorSelection(host, lookupDirs, manual, opts.vendor, {
-    registry: opts.registry,
-    // §8.6.1 探测三态：默认关闭（导出不联网）；显式打开才探测上游存活
-    probeUpstream: opts.probeUpstream === true,
-    log,
-  });
-  if (!Object.keys(selection).length && opts.vendor !== 'full') return null;
-  if (probed.length) log(`自动补选内嵌：${probed.join(', ')}`);
-  progress('vendor', `内嵌 ${Object.keys(selection).length} 个 vendored 依赖（档位 ${opts.vendor ?? 'auto'}）`);
-  const vr = await collectVendoredForExport(host, lookupDirs, manifest.type === 'dshhome' ? {} : (manifest.dependencies ?? {}), selection, {
-    registry: opts.registry,
-    log,
-    closure: opts.vendor === 'full',
-    lockText,
-  });
-  // dshhome 形态没有顶层 dependencies（依赖在各 profile 的 ProfileUnit 里），故只写 vendored；
-  // 各 profile 的键回写由 packHome 用 vr.keysByCoord 完成。
-  if (manifest.type !== 'dshhome') manifest.dependencies = vr.dependencies;
-  manifest.vendored = vr.vendored;
-  // §8.6.5 离线可装性自检（等价静态校验）：把「闭包是否收齐」在导出时就讲清楚，别等发版后才发现。
-  const cov = coverageOfVendored(manifest.vendored, vr.entries, lockText);
-  if (cov && !cov.complete) {
-    const head = cov.missing.slice(0, 5).join(', ');
-    log(`警告（离线可装性自检）：lockfile ${cov.total} 个依赖中 ${cov.missing.length} 个未被包内副本覆盖（${head}${cov.missing.length > 5 ? '…' : ''}）——该包离线装不上`);
-  } else if (cov) {
-    log(`离线可装性自检通过：lockfile ${cov.total} 个依赖全部由包内副本覆盖（安装端可加 --offline）`);
-  }
-  for (const note of vr.notes) log(`注意：${note}`);
-  progress('vendor', `vendored 完成：${Object.keys(vr.vendored).length} 个 tarball 已内嵌`);
-  return vr;
-}
-
-/** 打包前强校验（含 v5 r2 字段：dshVersions ∋ dshVersion、launchers 结构等）——错误在导出时报出，不带病出厂。
- * lockText（随包 pnpm-lock.yaml）供 vendored 闭包条目对账放行（§12 约束 1）。 */
-function assertManifestValid(manifest, lockText = null) {
-  const errors = validateManifest(manifest, { lockText });
+function assertManifestValid(manifest) {
+  const errors = validateManifest(manifest);
   if (errors.length) {
     throw new Error(`导出的 manifest 不合法（${errors.join('；')}）——请检查「兼容性」等表单项后重试`);
   }
@@ -136,20 +94,8 @@ export async function packProfile(host, profile, opts = {}) {
     if (!data) continue;
     entries[`home/${f.rel}`] = data;
   }
-  // v5 r2：手动勾选的依赖内嵌（UI 依赖清单）→ vendor/ 条目 + manifest.vendored + dependencies 三处一致
-  // full 档闭包收集以 profile 的 pnpm-lock.yaml 为准（与归档内快照同源）
-  const lockText = await host.readTextFile(host.joinPath(profile.dir, 'pnpm-lock.yaml'));
-  const vendorResult = await applyVendorSelection(host, manifest, [profile.dir], opts, progress, lockText);
-  if (vendorResult) {
-    Object.assign(entries, vendorResult.entries);
-    entries['pnpm-workspace.yaml'] = encodeText(syncWorkspaceSettings(
-      entries['pnpm-workspace.yaml'] ? decodeText(entries['pnpm-workspace.yaml']) : '',
-      lockText,
-    ));
-  }
-
-  // 打包前强校验（r2 字段结构 / dshVersion ∈ dshVersions 等；闭包条目按 lockfile 放行）
-  assertManifestValid(manifest, lockText);
+  // 打包前强校验（type 形态 / dshVersion ∈ dshVersions / launchers 结构等）
+  assertManifestValid(manifest);
 
   // manifest.json 始终在归档根（契约头，覆盖任何扫描残留）；dspack.json 为容器标记。
   entries['manifest.json'] = encodeText(JSON.stringify(manifest, null, 2) + '\n');
@@ -176,7 +122,6 @@ export async function packProfile(host, profile, opts = {}) {
     size: bytes.length,
     included: Object.keys(entries).length,
     excluded: scan.excluded.length,
-    vendored: Object.keys(manifest.vendored ?? {}),
   };
 }
 
@@ -242,41 +187,8 @@ export async function packHome(host, home, opts = {}) {
     entries[dspackEntryPath(f.rel)] = data;
   }
 
-  // v5 r2：vendor 档位 + 手动勾选内嵌（vendor/ 是包级目录；依赖在各 profile 的 node_modules 里查找）。
-  // 收集时按「坐标 → 版本」聚合，再回写每个 ProfileUnit（file:vendor-blobs 旧 key 一并替换）。
-  // full 档闭包收集以 home 根的 pnpm-lock.yaml 为准（与归档内快照同源）。
-  const lookupDirs = profiles.map((p) => p.dir);
-  const lockText = await host.readTextFile(host.joinPath(home.dir, 'pnpm-lock.yaml'));
-  const vendorResult = await applyVendorSelection(host, manifest, lookupDirs, opts, progress, lockText);
-  if (vendorResult) {
-    Object.assign(entries, vendorResult.entries);
-    // §8.6.8 + 实测：带 vendor/ 的包必须让包内 pnpm-workspace.yaml 与随包 lockfile 的 settings
-    // 一致，并写 minimumReleaseAge: 0（pnpm 11 发布冷静期，camelCase 才有效）。
-    entries['pnpm-workspace.yaml'] = encodeText(syncWorkspaceSettings(
-      entries['pnpm-workspace.yaml'] ? decodeText(entries['pnpm-workspace.yaml']) : '',
-      lockText,
-    ));
-    // 逐 profile 回写键（v5 r3 §2）：被内嵌的直接依赖在 ProfileUnit 里也要写成 `vendor:<包名>`，
-    // 值取内嵌时定下的精确版本（与 vendored[].version、tarball 内 version 三处一致）。
-    const keysByCoord = vendorResult.keysByCoord ?? {};
-    const vendored = manifest.vendored ?? {};
-    for (const [name, unit] of Object.entries(manifest.profiles)) {
-      const dir = host.joinPath(home.dir, 'profiles', name);
-      const localList = await listProfileDependencies(host, [dir]);
-      const deps = { ...(unit.dependencies ?? {}) };
-      for (const item of localList) {
-        const key = keysByCoord[item.coord];
-        if (!key || !Object.hasOwn(vendored, key)) continue;
-        delete deps[item.pkgName];
-        delete deps[item.coord];
-        deps[key] = vendored[key].version;
-      }
-      unit.dependencies = deps;
-    }
-  }
-
-  // 打包前强校验（r2 字段结构 / dshVersion ∈ dshVersions 等；闭包条目按 lockfile 放行）
-  assertManifestValid(manifest, lockText);
+  // 打包前强校验（type 形态 / dshVersion ∈ dshVersions / launchers 结构等）
+  assertManifestValid(manifest);
 
   entries['manifest.json'] = encodeText(JSON.stringify(manifest, null, 2) + '\n');
   entries['dspack.json'] = encodeText(JSON.stringify(dspackMarker(DSPACK_CONTAINER_VERSION)) + '\n');

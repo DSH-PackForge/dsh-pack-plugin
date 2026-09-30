@@ -1,5 +1,5 @@
-// 极简 tar（ustar）解包/打包：解包服务于「从 NPM 拉取管理器」与 vendored 直挂；
-// 打包服务于导出侧 vendored 重打包（死上游依赖按 npm tarball 规范从 node_modules 重建）。
+// 极简 tar（ustar）解包/打包：解包服务于「从 NPM 拉取依赖 / 管理器 tarball」；
+// 打包用于按 npm tarball 规范（顶层 `package/`）从目录内容重建 tarball（测试与工具用）。
 //
 // 只提取普通文件（typeflag '0' 或 NUL）；目录（'5'）、符号链接（'2'）与 PAX/GNU 扩展头
 // （'x'/'g'/'L'）一律跳过。限制：不解析 PAX 扩展出来的超长文件名——我们自己的包路径都
@@ -49,7 +49,7 @@ export function untar(tgz) {
 }
 
 /* ---------------------------------------------------------------------------
- * 打包（ustar）：导出侧 vendored 重打包用（unpublished / local-modified 场景）。
+ * 打包（ustar）：按 npm tarball 规范（顶层 `package/`）从目录内容重建 tarball。
  * ------------------------------------------------------------------------- */
 
 /** ustar 头校验和：chksum 字段（148..156）按 8 个空格计入后全体字节求和。 */

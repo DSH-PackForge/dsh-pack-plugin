@@ -12,7 +12,7 @@ import { normalizeLaunchers, compareLauncherVersions } from '../src/core/manifes
 import { judgeLaunchers, installPack } from '../src/core/install.js';
 import { buildDspack, encodeText } from '../src/core/dspack.js';
 
-/* ------------------- 测试工具（风格同 vendored.test.js） ------------------- */
+/* ------------------- 测试工具 ------------------- */
 
 /** 基于 node:fs 的 Host 替身（core 是 DI 边界，测试直接注入真实 fs 能力）。 */
 function fsHost(extra = {}) {

@@ -70,15 +70,14 @@ export function packDirId(entry) {
   return '';
 }
 
-/** v5 r2 兼容性字段透传（manifest v5 §12/§13/§14）：launchers / vendored / dshVersions
+/** v5 兼容性字段透传（manifest v5 §13/§14）：launchers / dshVersions
  *  从索引 entry 或懒加载详情 manifest 里「有什么带什么」。中心索引（index 契约 §6.5）不平铺
- *  这三个字段（只带派生标记 launcherRestricted），完整内容在 packs/<id>/manifest.json——
+ *  这两个字段（只带派生标记 launcherRestricted），完整内容在 packs/<id>/manifest.json——
  *  透传只为宽容消费：条目/manifest 里带了就带出，缺失不设键。 */
 export function pickR2Fields(src) {
   const out = {};
   if (!src || typeof src !== 'object') return out;
   if (src.launchers && typeof src.launchers === 'object' && !Array.isArray(src.launchers)) out.launchers = src.launchers;
-  if (src.vendored && typeof src.vendored === 'object' && !Array.isArray(src.vendored)) out.vendored = src.vendored;
   if (Array.isArray(src.dshVersions)) {
     const versions = src.dshVersions.filter((v) => typeof v === 'string' && v.trim());
     if (versions.length) out.dshVersions = versions;
@@ -89,9 +88,8 @@ export function pickR2Fields(src) {
 /** r2 字段 → 市场详情展示徽标（结构化条目，文案由 UI 层按 kind 做 i18n）：
  *  - { kind: 'launcher-require', id, minVersion }   需启动器 <id> ≥ <ver>（简式/全式都归一）
  *  - { kind: 'launcher-conflict', id, reason }      声明不支持某启动器（reason 可为空串）
- *  - { kind: 'vendored', count }                    内嵌 N 个依赖（离线分发）
  *  - { kind: 'dsh-versions', versions }             兼容 DSH 版本枚举集
- *  纯支持（supported:true 无 minVersion）不产生徽标；无任何 r2 字段 → 空列表（通用包）。 */
+ *  纯支持（supported:true 无 minVersion）不产生徽标；无任何字段 → 空列表（通用包）。 */
 export function r2Badges(src) {
   const out = [];
   const r2 = pickR2Fields(src);
@@ -99,8 +97,6 @@ export function r2Badges(src) {
     if (e.supported === false) out.push({ kind: 'launcher-conflict', id, reason: e.reason ?? '' });
     else if (e.minVersion) out.push({ kind: 'launcher-require', id, minVersion: e.minVersion });
   }
-  const count = r2.vendored ? Object.keys(r2.vendored).length : 0;
-  if (count) out.push({ kind: 'vendored', count });
   if (r2.dshVersions?.length) out.push({ kind: 'dsh-versions', versions: r2.dshVersions });
   return out;
 }
@@ -122,7 +118,7 @@ export async function readMarketIndex(host, indexPath) {
 /** 懒加载单个整合包的完整 manifest + README（来自 `packs/<owner>.<repo>/`）。
  *  由 index 路径推导 base：URL 去掉尾段 `index.json`；本地路径去掉文件名。
  *  返回 { manifest, readme, dir, r2 }：manifest 为解析后的对象（失败 null），readme 为原文（失败 ''），
- *  r2 = pickR2Fields(manifest)——manifest v5 r2 的 launchers / vendored / dshVersions 有什么带什么。 */
+ *  r2 = pickR2Fields(manifest)——manifest v5 的 launchers / dshVersions 有什么带什么。 */
 export async function fetchMarketPackDetail(host, indexPath, entry) {
   const dir = packDirId(entry);
   if (!dir) return { manifest: null, readme: '', dir: '', r2: {} };
@@ -211,7 +207,7 @@ export function normalizeMarketPack(entry, locale = 'zh-CN') {
     presets: entry.presets,
     skills: entry.skills,
     // v5 r2（index 契约 §3/§6.5）：索引只带派生标记 launcherRestricted（列表廉价过滤用），
-    // 完整 launchers / vendored / dshVersions 在懒加载 manifest；此处宽容透传——条目里带了就带出。
+    // 完整 launchers / dshVersions 在懒加载 manifest；此处宽容透传——条目里带了就带出。
     launcherRestricted: entry.launcherRestricted === true,
     ...pickR2Fields(entry),
   };

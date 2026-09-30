@@ -79,20 +79,7 @@ const dict = {
     'content.manifest': '仅清单（manifest.json）',
     'content.readme': '清单 + README',
     'content.full': '全套文件（overrides/ + release/）',
-    'vendor.title': '内嵌依赖（vendored · 离线分发）',
-    'vendor.hint': '勾选要内嵌进 .dspack 的插件：上游已消失 / 魔改 / 需离线分发的依赖建议内嵌；体积大时优先 files[] 指针制',
-    'vendor.reload': '刷新依赖',
-    'vendor.none': '该 profile 没有依赖',
-    'vendor.already': '已内嵌（复用原 tarball）',
-    'vendor.notInstalled': '未安装（无法内嵌）',
-    'vendor.selected': '已选',
-    'vendor.kind.npm': 'npm',
-    'vendor.kind.git': 'git',
-    'vendor.kind.vendored': '内嵌',
-    'vendor.mode': '内嵌档位',
-    'vendor.mode.auto': '自动（手动勾选 + 已内嵌复用）',
-    'vendor.mode.off': '关闭（不内嵌）',
-    'vendor.mode.full': '全量（全部直接依赖 · 离线包）',
+    // 基线已取消离线包：内嵌依赖（离线分发）相关文案整块移除，仅保留兼容性徽标文案。
     'compat.title': '兼容性（v5 r2）',
     'compat.dshVersions': '兼容 DSH 版本集（dshVersions）',
     'compat.dshVersionsHint': '逗号分隔的实测兼容版本枚举（如 0.1.1-rc.2, 0.1.0）；「DSH 版本」必须包含在内；留空 = 仅按 dshVersion',
@@ -131,9 +118,9 @@ const dict = {
     'market.r2.launcherRequire': '需启动器 {id} ≥ {ver}',
     'market.r2.launcherConflict': '不支持在 {id} 上运行：{reason}',
     'market.r2.noReason': '未提供原因',
-    'market.r2.vendored': '内嵌 {count} 个依赖（离线分发）',
     'market.r2.dshVersions': '兼容 DSH 版本：{versions}',
-    'market.r2.none': '无启动器兼容限制，未内嵌依赖',
+    // 基线已取消离线包：徽标兜底文案不再提「内嵌依赖」（该徽标随基线一并移除）。
+    'market.r2.none': '无启动器兼容限制',
     'installConfirm.title': '安装确认',
     'installConfirm.hint': '该整合包的启动器兼容声明存在警告，确认后将照常安装：',
     'installConfirm.ok': '仍要安装',
@@ -207,20 +194,7 @@ const dict = {
     'field.profile': 'Profile to export (default: active)',
     'field.source': '.dspack path or URL',
     'field.newName': 'New profile name',
-    'vendor.title': 'Vendored deps (offline distribution)',
-    'vendor.hint': 'Pick plugins to embed into the .dspack: dead-upstream / modified / offline deps are good candidates; prefer files[] pointers for large content',
-    'vendor.reload': 'Reload deps',
-    'vendor.none': 'No dependencies in this profile',
-    'vendor.already': 'Vendored (reuses original tarball)',
-    'vendor.notInstalled': 'Not installed (cannot embed)',
-    'vendor.selected': 'selected',
-    'vendor.kind.npm': 'npm',
-    'vendor.kind.git': 'git',
-    'vendor.kind.vendored': 'vendored',
-    'vendor.mode': 'Vendor mode',
-    'vendor.mode.auto': 'Auto (manual picks + re-use embedded)',
-    'vendor.mode.off': 'Off (no embedding)',
-    'vendor.mode.full': 'Full (all direct deps · offline pack)',
+    // 基线已取消离线包：内嵌依赖文案同样整块移除。
     'compat.title': 'Compatibility (v5 r2)',
     'compat.dshVersions': 'Compatible DSH versions (dshVersions)',
     'compat.dshVersionsHint': 'Comma-separated tested versions (e.g. 0.1.1-rc.2, 0.1.0); must include the "DSH version" field; blank = dshVersion only',
@@ -262,9 +236,9 @@ const dict = {
     'market.r2.launcherRequire': 'Requires launcher {id} ≥ {ver}',
     'market.r2.launcherConflict': 'Not supported on {id}: {reason}',
     'market.r2.noReason': 'no reason given',
-    'market.r2.vendored': '{count} vendored deps (offline distribution)',
     'market.r2.dshVersions': 'Compatible DSH versions: {versions}',
-    'market.r2.none': 'No launcher restrictions, no vendored deps',
+    // 基线已取消离线包：徽标兜底文案不再提内嵌依赖。
+    'market.r2.none': 'No launcher restrictions',
     'installConfirm.title': 'Install confirmation',
     'installConfirm.hint': 'This pack has launcher-compatibility warnings. It will still be installed after you confirm:',
     'installConfirm.ok': 'Install anyway',
@@ -388,13 +362,10 @@ export function DspackSection({ t, packforge }) {
   const [contentLevel, setContentLevel] = useState('readme');
   const [exportContent, setExportContent] = useState({ skill: false, preset: false, instruction: false });
   const [loadedFor, setLoadedFor] = useState(null); // 已自动加载过配置的 profile 名
-  const [deps, setDeps] = useState(null); // 导出依赖清单（null=未加载；[] = 无依赖）
-  const [depsFor, setDepsFor] = useState(null); // 已加载依赖清单的 profile 名
-  const [vendorSel, setVendorSel] = useState({}); // 勾选内嵌：{ 坐标: reason }（reason 缺省 explicit）
+  // 基线已取消离线包：导出依赖清单 / 内嵌勾选 / 内嵌档位三组 state 一并移除。
   const [dshVersionsText, setDshVersionsText] = useState(''); // 兼容 DSH 版本集（逗号分隔文本）
   // 启动器兼容编辑：{ [id]: { mode: 'support'|'conflict', minVersion, reason } }；无条目 = 未声明
   const [launchersState, setLaunchersState] = useState({});
-  const [vendorMode, setVendorMode] = useState('auto'); // vendoring 档位（workspace-config v1 r2）：auto | off | full
   const [installedDsh, setInstalledDsh] = useState([]); // 本机已装 DSH 版本（dshVersions 建议列表）
   // 启动器注册表（launchers/registry 端点，机器可读版）：[{id, name}]；null = 未加载（回落 LAUNCHER_IDS）
   const [launchersReg, setLaunchersReg] = useState(null);
@@ -668,7 +639,6 @@ export function DspackSection({ t, packforge }) {
   const badgeText = (b) => {
     if (b.kind === 'launcher-require') return t('market.r2.launcherRequire').replace('{id}', b.id).replace('{ver}', b.minVersion);
     if (b.kind === 'launcher-conflict') return t('market.r2.launcherConflict').replace('{id}', b.id).replace('{reason}', b.reason || t('market.r2.noReason'));
-    if (b.kind === 'vendored') return t('market.r2.vendored').replace('{count}', String(b.count));
     if (b.kind === 'dsh-versions') return t('market.r2.dshVersions').replace('{versions}', b.versions.join(', '));
     return '';
   };
@@ -697,12 +667,7 @@ export function DspackSection({ t, packforge }) {
     }
     const launchers = buildLaunchersField();
     if (Object.keys(launchers).length) overrides.launchers = launchers;
-    // v5 r2：vendoring 档位（auto/off/full；repo 形态不内嵌，不传）
-    if (mode === 'dspack') overrides.vendor = vendorMode;
-    // v5 r2：手动勾选的内嵌依赖（叠加在档位之上）
-    if (mode === 'dspack' && Object.keys(vendorSel).length) {
-      overrides.vendorCoords = { ...vendorSel };
-    }
+    // 基线已取消离线包：不再向导出 payload 写内嵌档位 / 内嵌坐标（其余字段一律保留）。
     const r = await call('pack/export', overrides);
     if (!r.ok) return showErr(r.error);
     showOk(t('result.taskStarted'));
@@ -769,10 +734,10 @@ export function DspackSection({ t, packforge }) {
       preset: ec?.preset === true,
       instruction: ec?.instruction === true,
     });
-    // v5 r2 兼容性字段回填（数组 → 逗号文本；launchers 简式/全式 → 编辑状态；vendor 档位）
+    // v5 r2 兼容性字段回填（数组 → 逗号文本；launchers 简式/全式 → 编辑状态）
+    // 基线已取消离线包：.dshpkcfg 的内嵌档位字段随基线一并移除，不再回填。
     setDshVersionsText(Array.isArray(cfg?.dshVersions) ? cfg.dshVersions.join(', ') : '');
     setLaunchersState(launchersValueToState(cfg?.launchers));
-    setVendorMode(['auto', 'off', 'full'].includes(cfg?.vendor) ? cfg.vendor : 'auto');
   };
 
   const loadConfig = async (name, silent = false) => {
@@ -807,7 +772,7 @@ export function DspackSection({ t, packforge }) {
     if (versions.length) cfg.dshVersions = versions;
     const launchers = buildLaunchersField();
     if (Object.keys(launchers).length) cfg.launchers = launchers;
-    if (vendorMode !== 'auto') cfg.vendor = vendorMode; // auto 为缺省档，不落盘
+    // 基线已取消离线包：不再把内嵌档位写进 .dshpkcfg。
     const r = await call('pack/config-save', { profile: exportProfile, ...cfg });
     if (!r.ok) return showErr(r.error);
     showOk(t('result.saved') + ' → ' + r.value.path);
@@ -820,28 +785,8 @@ export function DspackSection({ t, packforge }) {
     void loadConfig(exportProfile, true);
   }, [tab, exportProfile, loadedFor]);
 
-  // v5 r2：切到导出 tab（dspack 形态）/ 换 profile 时自动加载依赖清单（纯本地，无网络）；
-  // 默认勾选「已内嵌」的依赖（装过 vendored 包 round-trip 保持内嵌）；「刷新依赖」可强制重读。
-  const loadDeps = async (name, silent = false) => {
-    if (!name) return;
-    const r = await call('pack/dependencies', { profile: name });
-    if (!r.ok) {
-      if (!silent) showErr(r.error);
-      return;
-    }
-    const list = r.value.deps ?? [];
-    setDeps(list);
-    setDepsFor(name);
-    const sel = {};
-    for (const d of list) if (d.vendored) sel[d.coord] = 'explicit';
-    setVendorSel(sel);
-  };
-
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (tab !== 'export' || mode !== 'dspack' || !exportProfile || depsFor === exportProfile) return;
-    void loadDeps(exportProfile, true);
-  }, [tab, mode, exportProfile, depsFor]);
+  // 基线已取消离线包：依赖清单加载（loadDeps）、默认勾选与「刷新依赖」触发的自动重读
+  // （原 pack/dependencies 轮询 effect）随之删除，这里不再保留任何内嵌相关逻辑。
 
   // 任务中心面板：展开期间轮询 task/list（600ms），收起即停止。
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1108,64 +1053,8 @@ export function DspackSection({ t, packforge }) {
           ),
         ),
       ),
-      mode === 'dspack'
-        ? h('div', { style: style.group },
-            h('div', { style: style.marketHead },
-              h('div', { style: style.groupTitle },
-                t('vendor.title'),
-                Object.keys(vendorSel).length
-                  ? h('span', { style: { ...style.line, marginLeft: 8 } }, `（${Object.keys(vendorSel).length} ${t('vendor.selected')}）`)
-                  : null,
-              ),
-              h('div', { style: style.row },
-                h('select', {
-                  style: { ...style.input, width: 220 },
-                  value: vendorMode,
-                  title: t('vendor.mode'),
-                  onChange: (e) => setVendorMode(e.target.value),
-                },
-                  h('option', { value: 'auto' }, t('vendor.mode.auto')),
-                  h('option', { value: 'off' }, t('vendor.mode.off')),
-                  h('option', { value: 'full' }, t('vendor.mode.full')),
-                ),
-                h('button', {
-                  type: 'button', style: style.btnSmall, disabled: !rpc || !exportProfile,
-                  onClick: () => void loadDeps(exportProfile, false),
-                }, t('vendor.reload')),
-              ),
-            ),
-            h('p', { style: style.hint }, t('vendor.hint')),
-            deps == null
-              ? h('p', { style: style.line }, '…')
-              : deps.length === 0
-                ? h('p', { style: style.line }, t('vendor.none'))
-                : h('ul', { style: style.list },
-                    deps.map((d) => h('li', { key: d.coord, style: style.listItem },
-                      h('label', { style: { display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', minWidth: 0 } },
-                        h('input', {
-                          type: 'checkbox',
-                          checked: !!vendorSel[d.coord],
-                          disabled: !d.installed && !d.vendored,
-                          style: { width: 16, height: 16, cursor: d.installed || d.vendored ? 'pointer' : 'not-allowed', accentColor: '#4b7bec', flex: '0 0 auto' },
-                          onChange: (e) => setVendorSel((s) => {
-                            const next = { ...s };
-                            if (e.target.checked) next[d.coord] = 'explicit';
-                            else delete next[d.coord];
-                            return next;
-                          }),
-                        }),
-                        h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 } },
-                          h('span', { style: style.listName }, `${d.pkgName}${d.version ? ` · ${d.version}` : ''}`),
-                          h('span', { style: style.line },
-                            t('vendor.kind.' + d.kind)
-                            + (d.vendored ? ` · ${t('vendor.already')}` : '')
-                            + (!d.installed && !d.vendored ? ` · ${t('vendor.notInstalled')}` : '')),
-                        ),
-                      ),
-                    )),
-                  ),
-          )
-        : null,
+      // 基线已取消离线包：「内嵌依赖（离线分发）」表单区（档位选择 / 依赖勾选清单 /
+      // 「刷新依赖」按钮 / 「已内嵌」「未安装」提示）整块移除，导出侧不再有内嵌相关 UI。
       h('div', { style: style.row },
         h('button', { type: 'button', style: style.btn, disabled: !rpc, onClick: doSaveConfig }, t('action.save')),
         h('button', { type: 'button', style: style.btn, disabled: !rpc, onClick: doLoadConfig }, t('action.load')),
@@ -1422,7 +1311,7 @@ export function DspackSection({ t, packforge }) {
                   h('span', { style: style.line },
                     `${pack.author ? pack.author + ' · ' : ''}${pack.version || '?'}${pack.dshVersion ? ' · DSH ' + pack.dshVersion : ''}`),
                 ),
-                // v5 r2 兼容性徽标：需启动器 ≥ x / 声明冲突 / 内嵌 N 个依赖 / 兼容 DSH 版本集
+                // v5 r2 兼容性徽标：需启动器 ≥ x / 声明冲突 / 兼容 DSH 版本集（离线包徽标已随基线移除）
                 (detail.badges ?? []).length
                   ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
                       detail.badges.map((b, i) => b.kind === 'launcher-conflict'

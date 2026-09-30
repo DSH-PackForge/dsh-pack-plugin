@@ -3,11 +3,11 @@
 import { packProfile, packHome } from './pack.js';
 import { exportRepo } from './repo.js';
 
-/** .dshpkcfg 已知字段白名单（规范 v1 r2：公共 + profile + dshhome 形态 + 兼容性/内嵌旋钮）。 */
+/** .dshpkcfg 已知字段白名单（规范 v1：公共 + profile + dshhome 形态 + 兼容性旋钮）。 */
 export const WORKSPACE_KEYS = [
   'name', 'version', 'displayName', 'description', 'author', 'icon', 'dshVersion', 'out',
   'exportContent', 'profileName', 'mode', 'content', 'defaultProfile',
-  'dshVersions', 'launchers', 'vendor',
+  'dshVersions', 'launchers',
 ];
 
 /** 读取某个目录下的 .dshpkcfg；不存在/非法 → null。 */

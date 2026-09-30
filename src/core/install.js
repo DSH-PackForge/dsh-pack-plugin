@@ -2,8 +2,6 @@ import { parseDspack, decodeText } from './dspack.js';
 import { validateManifest, coordsToPkgDeps, sanitizeSlug, parseGitCoord, normalizeLaunchers, compareLauncherVersions } from './manifest.js';
 import { listInstalledDshVersions, sortVersionsDesc } from './discovery.js';
 import { storeHomeRel } from './home-store.js';
-import { resolveVendoredPlan, isDialectSpec, directMount, materializeVendorBlobs, blobRelPath, computeOfflineCoverage, allDependencyCoords, vendorKeyToName, VENDOR_KEY_PREFIX } from './vendored.js';
-import { localizeDirectNpm, localizeDirectGit, localizeClosureNode, findPackageNodes } from './lockfile.js';
 
 /**
  * 一键安装：读取本地/URL 的 .dspack → 校验头 & manifest → 按 type 分支安装。
@@ -53,10 +51,7 @@ export async function installPack(host, opts = {}) {
 
     if (!entries['manifest.json']) throw new Error('整合包缺少 manifest.json（不是有效的 .dspack）');
     const manifest = parseJson(decodeText(entries['manifest.json']));
-    // lockText：full 闭包包的 vendored 闭包条目不在直接依赖里，须对照随包 pnpm-lock.yaml 放行（v5 §12 约束 1）
-    const errors = validateManifest(manifest, {
-      lockText: entries['pnpm-lock.yaml'] ? decodeText(entries['pnpm-lock.yaml']) : null,
-    });
+    const errors = validateManifest(manifest);
     if (errors.length) throw new Error(`整合包不合法：${errors.join('；')}`);
 
     log(`manifest v${manifest.manifestVersion} type=${manifest.type ?? 'profile'} name=${manifest.name}`);
@@ -77,33 +72,17 @@ export async function installPack(host, opts = {}) {
     }
     if (launchersResult.warnings.length) log('launchers 警告已放行（用户已确认继续，安装不受影响）');
 
-    // 阶段 0（v5 r3）：vendored 归一 + 对账 + 逐 tarball sha256/size 预验——装前发现优于装到一半。
-    // r1 包（无 vendor/）立即返回 active:false，行为与修订前完全一致。
-    const vendoredPlan = await resolveVendoredPlan(host, manifest, entries, log);
-    // 闭包完整性（v3 §8.3）：「离线可装」是派生属性——lockfile 里的依赖都被包内副本覆盖（版本级命中）
-    // 才加 `--offline` 作零网络断言。r3 起闭包条目也会被本地化（改 resolution.tarball），
-    // 所以不再有「store 预填充」这回事。
-    if (vendoredPlan.active && entries['pnpm-lock.yaml']) {
-      const coverage = computeOfflineCoverage(decodeText(entries['pnpm-lock.yaml']), vendoredPlan);
-      if (coverage?.complete) {
-        vendoredPlan.offline = true;
-        log(`vendored 闭包完整（lockfile ${coverage.total} 个包全部被包内副本覆盖）→ 加 --offline 作零网络断言`);
-      } else if (coverage) {
-        const head = coverage.missing.slice(0, 5).join(', ');
-        log(`vendored 局部覆盖：lockfile ${coverage.total} 个包中 ${coverage.missing.length} 个未内嵌（${head}${coverage.missing.length > 5 ? '…' : ''}）→ 未覆盖的仍按坐标从网络取`);
-      }
-    }
     if (manifest.manifestVersion === 5 && manifest.type === 'dshhome') {
-      return await installDshHome(host, manifest, entries, opts, progress, vendoredPlan, launchersResult);
+      return await installDshHome(host, manifest, entries, opts, progress, launchersResult);
     }
-    return await installProfile(host, manifest, entries, opts, progress, profilesRoot, vendoredPlan, launchersResult);
+    return await installProfile(host, manifest, entries, opts, progress, profilesRoot, launchersResult);
   } finally {
     if (tempDir) await host.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
 /** 单 profile（v5）安装：现有语义，装到 profilesRoot/<name>。 */
-async function installProfile(host, manifest, entries, opts, progress, profilesRoot, vendoredPlan, launchersResult) {
+async function installProfile(host, manifest, entries, opts, progress, profilesRoot, launchersResult) {
   const profileName = sanitizeSlug(opts.name || manifest.profileName || manifest.name);
   if (!profileName) throw new Error('无法确定 Profile 名称');
   const target = host.joinPath(profilesRoot, profileName);
@@ -118,7 +97,6 @@ async function installProfile(host, manifest, entries, opts, progress, profilesR
     return {
       profileName, dir: target, manifest, dryRun: true, installed: false, reconcile: null,
       filesDownloaded: 0, exists, dshVersion: dshDecision?.version ?? null,
-      vendored: summarizeVendored(vendoredPlan, manifest.dependencies ?? {}),
       launchers: launchersResult,
     };
   }
@@ -135,20 +113,17 @@ async function installProfile(host, manifest, entries, opts, progress, profilesR
 
   try {
     progress('extract', '写入 overrides/ 与 package.json');
-    await materializePackage(host, target, manifest, entries, log, vendoredPlan);
+    await materializePackage(host, target, manifest, entries, log);
 
     // home/ → $DSH_HOME 根（上一级目录内容：全局 skill / 预设），与 overrides/（profile 根）并列。
     await materializeHome(host, host.joinPath(profilesRoot, '..'), entries, profileName, log);
 
     let installed = false;
     let reconcile = null;
-    const mounted = [];
     if (!opts.noInstall) {
       installed = true;
       progress('install', '运行 pnpm install（依赖重建，可能较慢）');
-      await pnpmInstall(host, target, opts, !!entries['pnpm-lock.yaml'], vendorArgs(vendoredPlan, !!entries['pnpm-lock.yaml']));
-      // DSHL 方言依赖：pnpm 之后直挂进 node_modules（须在层栈对账之前）
-      mounted.push(...await mountDialectDeps(host, target, manifest.dependencies ?? {}, vendoredPlan, log));
+      await pnpmInstall(host, target, opts, !!entries['pnpm-lock.yaml']);
       reconcile = await reconcileProfile(host, target, manifest);
       if (reconcile.missing.length > 0) {
         throw new Error(
@@ -166,7 +141,6 @@ async function installProfile(host, manifest, entries, opts, progress, profilesR
     return {
       profileName, dir: target, manifest, dryRun: false, installed, reconcile, filesDownloaded,
       dshVersion: dshDecision?.version ?? null,
-      vendored: summarizeVendored(vendoredPlan, manifest.dependencies ?? {}, mounted),
       launchers: launchersResult,
     };
   } catch (e) {
@@ -176,7 +150,7 @@ async function installProfile(host, manifest, entries, opts, progress, profilesR
 }
 
 /** dshhome（v5）安装：整个 DSH_HOME 快照，顺序「先装 DSH → 建 home → 逐 profile → home 级资源 → 指针下载」。 */
-async function installDshHome(host, manifest, entries, opts, progress, vendoredPlan, launchersResult) {
+async function installDshHome(host, manifest, entries, opts, progress, launchersResult) {
   const log = makeLog(opts.onOutput);
 
   // ① 先确保 dshVersion / dshVersions（r2 交集决策）选定的 DSH 已安装：多个 profile 的 bundle 都靠安装基线解析。
@@ -192,7 +166,6 @@ async function installDshHome(host, manifest, entries, opts, progress, vendoredP
       type: 'dshhome', dir: homeRoot, manifest, dryRun: true, installed: false, exists,
       profiles: Object.keys(manifest.profiles), defaultProfile: manifest.defaultProfile, filesDownloaded: 0,
       dshVersion: dshDecision?.version ?? null,
-      vendored: summarizeVendored(vendoredPlan, aggregateDeps(manifest)),
       launchers: launchersResult,
     };
   }
@@ -209,16 +182,14 @@ async function installDshHome(host, manifest, entries, opts, progress, vendoredP
   try {
     // ② 逐 profile：overrides/profiles/<name>/ 落盘 → pnpm install → 对账（各自独立）
     const installed = [];
-    const mountedAll = [];
     for (const [name, unit] of Object.entries(manifest.profiles)) {
       const profileDir = host.joinPath(homeRoot, 'profiles', name);
       progress('extract', `写入 profile「${name}」`);
-      await materializeProfile(host, profileDir, name, unit, entries, log, vendoredPlan);
+      await materializeProfile(host, profileDir, name, unit, entries, log);
 
       if (!opts.noInstall) {
         progress('install', `运行 pnpm install（${name}，可能较慢）`);
-        await pnpmInstall(host, profileDir, opts, !!entries['pnpm-lock.yaml'], vendorArgs(vendoredPlan, !!entries['pnpm-lock.yaml']));
-        mountedAll.push(...await mountDialectDeps(host, profileDir, unit.dependencies ?? {}, vendoredPlan, log));
+        await pnpmInstall(host, profileDir, opts, !!entries['pnpm-lock.yaml']);
         const reconcile = await reconcileProfile(host, profileDir, unit);
         if (reconcile.missing.length > 0) {
           throw new Error(
@@ -247,20 +218,12 @@ async function installDshHome(host, manifest, entries, opts, progress, vendoredP
       type: 'dshhome', dir: homeRoot, manifest, dryRun: false, installed: true,
       profiles: installed, defaultProfile: manifest.defaultProfile, filesDownloaded,
       dshVersion: dshDecision?.version ?? null,
-      vendored: summarizeVendored(vendoredPlan, aggregateDeps(manifest), mountedAll),
       launchers: launchersResult,
     };
   } catch (e) {
     await host.rm(homeRoot, { recursive: true, force: true }).catch(() => {});
     throw e;
   }
-}
-
-/** dshhome 各 profile 依赖坐标并集（vendored 摘要用）。 */
-function aggregateDeps(manifest) {
-  const out = {};
-  for (const u of Object.values(manifest.profiles ?? {})) Object.assign(out, u?.dependencies ?? {});
-  return out;
 }
 
 /**
@@ -363,35 +326,6 @@ async function ensureDsh(host, manifest, opts) {
   throw new Error(`dshhome 依赖 ${declared}，但本机未安装（已装：${have}）。请先用启动器安装该版本后再导入。`);
 }
 
-/** vendored 摘要（安装结果 / dry-run 计划展示用）。 */
-function summarizeVendored(plan, deps, mounted = []) {
-  if (!plan?.active) return { active: false, used: [], mounted: [], offline: false };
-  const used = [];
-  for (const coord of Object.keys(deps ?? {})) {
-    const e = plan.byCoord.get(coord);
-    if (e && !e.dialect) used.push(coord);
-  }
-  return { active: true, used, mounted, offline: plan.offline === true };
-}
-
-/** DSHL 方言依赖直挂（v3 §8.3 direct-mount）：pnpm install 之后、层栈对账之前执行。 */
-async function mountDialectDeps(host, target, deps, plan, log) {
-  if (!plan?.active) return [];
-  const mounted = [];
-  for (const [name, spec] of Object.entries(deps ?? {})) {
-    if (!isDialectSpec(spec)) continue;
-    const entry = plan.byCoord.get(name);
-    if (!entry) {
-      // 该包已被显式 `vendor:<名>` 条目接管（v3 §8.5 显式优先）→ 方言条目已从计划里丢弃，不再直挂
-      if (plan.byCoord.has(`${VENDOR_KEY_PREFIX}${name}`)) continue;
-      throw new Error(`方言依赖「${name}」在 vendor/vendor.json 中无对应条目（拒装）`);
-    }
-    await directMount(host, target, name, entry, log);
-    mounted.push(name);
-  }
-  return mounted;
-}
-
 /* ------------------------------------------------------------------ */
 
 /**
@@ -442,13 +376,8 @@ export async function verifyIntegrity(host, packPath, opts = {}) {
   }
 }
 
-/** 单 profile：overrides/* 落盘 + 重建 package.json + 快照机器文件 + vendored tarball 落盘（r2）。 */
-async function materializePackage(host, dir, manifest, entries, log, plan) {
-  // 0) vendored tarball → vendor-blobs/（file: 引用的实体；manifest 不动，改写只发生在重建的 package.json）。
-  //    取**全部**计划条目：闭包条目不在 dependencies 里，也必须落盘——本地化时改的
-  //    resolution.tarball 指的就是这里的实体。
-  if (plan?.active) await materializeVendorBlobs(host, dir, plan, [...plan.byCoord.keys()], log);
-
+/** 单 profile：overrides/* 落盘 + 重建 package.json + 快照机器文件。 */
+async function materializePackage(host, dir, manifest, entries, log) {
   // 1) overrides/* → profile 根
   for (const [entryPath, data] of Object.entries(entries)) {
     if (!entryPath.startsWith('overrides/')) continue;
@@ -463,7 +392,6 @@ async function materializePackage(host, dir, manifest, entries, log, plan) {
   const base = parseJson(decodeText(entries['package.json'] || new Uint8Array())) ?? {};
   const pkg = base && typeof base === 'object' && !Array.isArray(base) ? base : {};
   pkg.dependencies = coordsToPkgDeps(manifest.dependencies ?? {});
-  applyVendoredSpecs(pkg.dependencies, manifest.dependencies ?? {}, plan);
   pkg.dsh = { ...(pkg.dsh ?? {}), profile: { ...(pkg.dsh?.profile ?? {}), bundles: manifest.bundles ?? [] } };
   const pkgPath = host.joinPath(dir, 'package.json');
   await host.writeTextFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
@@ -477,10 +405,6 @@ async function materializePackage(host, dir, manifest, entries, log, plan) {
       log(`写入 ${name} → ${dest}`);
     }
   }
-
-  // 3.5) lockfile 本地化（v3 §8.3 两支 + 闭包条目）——必须在 pnpm install 之前，
-  //      且改的是**落盘副本**，包内字节一个字不动（§8.6 第 6 条）。
-  await localizeTargetLockfile(host, dir, plan, log);
 
   // 4) cordis.patch.yml：overrides 已优先落地；缺则回退 manifest.patch
   const patchPath = host.joinPath(dir, 'cordis.patch.yml');
@@ -503,12 +427,9 @@ async function materializeHome(host, homeRoot, entries, profileName, log) {
 }
 
 /** dshhome 单个 profile：overrides/profiles/<name>/ 落盘 + 以 ProfileUnit 重建 package.json / patch。 */
-async function materializeProfile(host, profileDir, name, unit, entries, log, plan) {
+async function materializeProfile(host, profileDir, name, unit, entries, log) {
   await host.mkdir(profileDir);
   log(`创建 profile 目录：${profileDir}`);
-
-  // 0) vendored tarball → vendor-blobs/（vendor/ 是包级的，各 profile 各放一份 file: 引用实体）
-  if (plan?.active) await materializeVendorBlobs(host, profileDir, plan, [...plan.byCoord.keys()], log);
 
   // 1) overrides/profiles/<name>/* → profile 根
   const prefix = `overrides/profiles/${name}/`;
@@ -528,7 +449,6 @@ async function materializeProfile(host, profileDir, name, unit, entries, log, pl
     dependencies: coordsToPkgDeps(unit.dependencies ?? {}),
     dsh: { profile: { bundles: unit.bundles ?? [] } },
   };
-  applyVendoredSpecs(pkg.dependencies, unit.dependencies ?? {}, plan);
   const pkgPath = host.joinPath(profileDir, 'package.json');
   await host.writeTextFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
   log(`重建 package.json → ${pkgPath}`);
@@ -539,9 +459,6 @@ async function materializeProfile(host, profileDir, name, unit, entries, log, pl
     await host.writeTextFile(patchPath, unit.patch);
     log(`回退 unit.patch → ${patchPath}`);
   }
-
-  // 4) lockfile 本地化：dshhome 的每个 profile 各自一份 lockfile（各跑一次 pnpm install）
-  await localizeTargetLockfile(host, profileDir, plan, log);
 }
 
 /** dshhome：home 级 overrides（.agent-presets/ skills/ AGENTS.md data/ 等，profiles/ 除外）落盘。 */
@@ -558,136 +475,18 @@ async function materializeHomeOverrides(host, homeRoot, entries, log) {
 }
 
 /**
- * vendored 依赖在**重建的 package.json** 上的 spec 决策（v3 §8.3 统一算法）：
- * - `vendor:<包名>` 条目 → package.json 里落**包名**，值改写为 `file:vendor-blobs/...`；
- * - DSHL 方言 spec（`vendor:<file>.tgz`）→ 从依赖中剔除（tarball 直挂，不传给 pnpm）；
- * - 非 vendored 坐标 → 原样。manifest 不动（规范禁止安装端改写包内字节，改写仅发生在重建产物上）。
+ * pnpm 依赖安装。优先走 host.pnpm（桌面端复用 DSH 自带 node+pnpm，不依赖用户 PATH），
+ * 无此能力则回退 PATH 上的 pnpm。带 lockfile 时先试 `--frozen-lockfile`（可复现），
+ * 失配则回退普通安装（v4/v5 导入语义）。
  */
-function applyVendoredSpecs(pkgDeps, manifestDeps, plan) {
-  if (!plan?.active) return;
-  for (const [coord, spec] of Object.entries(manifestDeps ?? {})) {
-    const entry = plan.byCoord.get(coord);
-    // v5 r3 §2：`vendor:<包名>` 的包名 = 剥去一次前缀；裸坐标仍按 git 折算 / 原名（§2 转换表）
-    const vendoredName = vendorKeyToName(coord);
-    const git = parseGitCoord(coord);
-    const pkgName = vendoredName ?? (git ? git.name : coord);
-    if (isDialectSpec(spec)) {
-      delete pkgDeps[pkgName]; // 方言：直挂，不传给 pnpm（v3 §8.5）
-      continue;
-    }
-    if (entry && !entry.dialect) {
-      pkgDeps[pkgName] = `file:${blobRelPath(coord, entry)}`;
-    }
-  }
-}
-
-/**
- * 把落盘副本 `pnpm-lock.yaml` 按 v3 r3 §8.3 本地化（支 A / 支 B / 闭包条目）。
- *
- * 为什么必须在安装前做、且只改副本：
- *   - pnpm 拒绝把 `file:` 只写在 package.json（`ERR_PNPM_OUTDATED_LOCKFILE`），四处/取件地址
- *     必须同步；r3 的结论是「改取件地址，而不是填 store 缓存」（`ERR_PNPM_NO_OFFLINE_TARBALL`）。
- *   - 包内快照必须保持来源风格（§8.1），否则不识 `vendor/` 的老启动器会因为路径缺失全盘失败。
- *
- * 组装规则（实测 pnpm 11.7.0）：
- *   - 直接依赖：npm 节点走支 A（importer specifier/version、packages 键、resolution、snapshots 键
- *     四处同步，并在节点里补 version 字段）；git 节点走支 B（只改 `resolution.tarball`）。
- *   - 闭包条目：只改该节点的 `resolution.tarball`（闭包没有 importer 段可改）。
- *   - 定位只能靠**包名**：git 节点的键版本段是 codeload URL，不是版本。
- */
-async function localizeTargetLockfile(host, targetDir, plan, log) {
-  if (!plan?.active) return { localized: false, changes: [] };
-  const lockPath = host.joinPath(targetDir, 'pnpm-lock.yaml');
-  const original = await host.readTextFile(lockPath);
-  const localizable = [...plan.byCoord.values()].filter((e) => !e.dialect);
-  if (!original) {
-    // 方言条目不需要 lockfile（它们走直挂 + 从依赖里剔除）。但**非方言**条目的本地化必须靠
-    // lockfile 认节点（git 节点的键版本段是 codeload URL，没法凭键猜），缺它就退回 file: spec
-    // 直接安装——规范要求带 vendor/ 的包必须带 lockfile，这里是宽进并留痕。
-    if (localizable.length) {
-      log('警告：包内带 vendor/ 但缺 pnpm-lock.yaml → 无法按 v3 §8.3 本地化（改取件地址），退化为 file: spec 直接安装');
-    }
-    return { localized: false, changes: [] };
-  }
-  let text = original;
-  const changes = [];
-  for (const [key, e] of plan.byCoord) {
-    if (e.dialect) continue; // 方言走直挂（v3 §8.5），不进 lockfile
-    const blobRel = blobRelPath(key, e);
-    if (e.kind === 'closure') {
-      const nodes = findPackageNodes(text, e.pkgName);
-      const node = nodes.find((n) => n.version === e.version) ?? (nodes.length === 1 ? nodes[0] : null);
-      if (!node) throw new Error(`闭包条目「${key}」在 lockfile 里找不到对应节点（无法本地化）`);
-      const r = localizeClosureNode(text, { key: node.key, blobRel });
-      text = r.text;
-      changes.push(...r.changes);
-      continue;
-    }
-    const nodes = findPackageNodes(text, e.pkgName);
-    if (nodes.some((n) => n.gitHosted)) {
-      // 支 B：git 来源（codeload 归档非 npm 布局，改 file: 装不了）
-      const r = localizeDirectGit(text, { name: e.pkgName, blobRel });
-      text = r.text;
-      changes.push(...r.changes);
-    } else {
-      // 支 A：npm 来源。integrity 用**现算 sha512** 覆盖（包里可能是本地重打包后的值）
-      const integrity = `sha512-${await host.sha512(e.bytes)}`;
-      const r = localizeDirectNpm(text, { name: e.pkgName, version: e.version, blobRel, integrity });
-      text = r.text;
-      changes.push(...r.changes);
-    }
-  }
-  await host.writeTextFile(lockPath, text);
-  const head = changes.slice(0, 4).join(' / ');
-  log(`lockfile 本地化：${changes.length} 处（${head}${changes.length > 4 ? ' …' : ''}）`);
-  return { localized: true, changes };
-}
-
-/**
- * vendored 安装参数（v3 r3 §8.3 执行段）：本地化之后 lockfile 与 package.json 已一致，按规范走
- * `pnpm install --frozen-lockfile --trust-lockfile`；全部依赖都被包内副本覆盖（coverage complete）
- * 时再加 `--offline` 作零网络断言。**不用 `--prefer-offline`**——它表达「本地优先、否则联网」，
- * 与「来源由键唯一确定」矛盾（r2 的做法已被规范否决）。
- * @returns {string[]|null} null = 无 vendored 内容（走原有纯网络路径）
- */
-function vendorArgs(plan, hasLockfile) {
-  if (!plan?.active) return null;
-  const args = [];
-  // 本地化只在有 lockfile 时发生（§8.3 改的是 lockfile 里的取件地址）；无 lockfile 就没法 frozen。
-  if (hasLockfile) args.push('--frozen-lockfile');
-  // `--trust-lockfile`：pnpm 11 的供应链复检（发布冷静期）豁免，等价于包内写 minimumReleaseAge: 0
-  // ——规范 §8.6.8 给的正是这两个二选一。
-  args.push('--trust-lockfile');
-  if (plan.offline) args.push('--offline');
-  return args;
-}
-
-async function pnpmInstall(host, target, opts, frozen, vArgs = null) {
+async function pnpmInstall(host, target, opts, frozen) {
   // 依赖重建可能较慢（尤其 git 依赖走 git clone），给足超时但绝不无限卡死。
   const timeoutMs = opts.timeoutMs > 0 ? opts.timeoutMs : 10 * 60 * 1000;
   // 优先走 host.pnpm（桌面端复用 DSH 自带 node+pnpm，不依赖用户 PATH 上的 node/pnpm）；无此能力则回退 PATH 上的 pnpm。
   const runPnpm = typeof host.pnpm === 'function'
     ? (args, o) => host.pnpm(args, o)
     : (args, o) => host.exec('pnpm', args, o);
-  const warn = typeof opts.onOutput === 'function' ? opts.onOutput : () => {};
   const base = ['install', ...(opts.registry ? ['--registry', opts.registry] : [])];
-
-  if (vArgs) {
-    // 本地化后的 vendored 安装：规范要求 frozen（可复现）。失败时退一步让 pnpm 重写 lockfile
-    // ——典型成因是包内 lockfile 的 settings 与本机 pnpm 配置不一致
-    // （专测：ERR_PNPM_LOCKFILE_CONFIG_MISMATCH，pnpm 11）——并把偏差记进日志。
-    let r = await runPnpm([...base, ...vArgs], { cwd: target, timeoutMs, onOutput: opts.onOutput });
-    if (r.status !== 0) {
-      warn('vendored 安装未通过 --frozen-lockfile 校验 → 退一步用 --no-frozen-lockfile 重试（偏差留痕）');
-      r = await runPnpm(
-        [...base, '--no-frozen-lockfile', '--trust-lockfile', ...(vArgs.includes('--offline') ? ['--offline'] : [])],
-        { cwd: target, timeoutMs, onOutput: opts.onOutput },
-      );
-    }
-    if (r.error) throw new Error(`pnpm install 执行失败：${r.error}`);
-    if (r.status !== 0) throw new Error(`pnpm install 失败（退出码 ${r.status ?? '未知'}）`);
-    return;
-  }
 
   const args = [...base];
   if (frozen) args.push('--frozen-lockfile');

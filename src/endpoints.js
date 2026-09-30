@@ -14,7 +14,6 @@ import {
   fetchMarketPackDetail,
   normalizeLaunchers,
   judgeLaunchers,
-  listProfileDependencies,
   listInstalledDshVersions,
   DEFAULT_MARKET_INDEX,
 } from './core/index.js';
@@ -212,15 +211,6 @@ export const ENDPOINTS = {
         payload?.launchers && typeof payload.launchers === 'object' && !Array.isArray(payload.launchers) && Object.keys(payload.launchers).length
           ? payload.launchers
           : undefined,
-      // v5 r2：vendoring 档位（workspace-config v1 r2）：auto（默认）/ off / full
-      vendor: typeof payload?.vendor === 'string' && ['auto', 'off', 'full'].includes(payload.vendor) ? payload.vendor : undefined,
-      // v5 r2：UI 依赖清单手动勾选的内嵌项 { 坐标: reason }（transient，不进 .dshpkcfg 白名单）
-      vendorCoords:
-        payload?.vendorCoords && typeof payload.vendorCoords === 'object' && Object.keys(payload.vendorCoords).length
-          ? payload.vendorCoords
-          : undefined,
-      // v5 r3：上游探测三态（§8.6.1）——默认关闭（导出不联网）；显式传 true 才探测
-      probeUpstream: payload?.probeUpstream === true,
       force: payload?.force === true,
       mode: payload?.mode,
       content: payload?.content,
@@ -241,15 +231,6 @@ export const ENDPOINTS = {
       }
     }).catch(() => {});
     return { taskId: id };
-  },
-
-  // v5 r2：列出 profile 的依赖清单（UI「内嵌依赖」勾选列表数据源；无网络请求，纯本地）。
-  // kind ∈ npm（registry 精确版本）/ git（github sha）/ vendored（装过 vendored 包，可直接复用 tarball）。
-  'pack/dependencies': async ({ runtime, payload }) => {
-    const host = getHost();
-    const profile = await resolveExportProfile(runtime, host, payload?.profile ?? null);
-    const deps = await listProfileDependencies(host, [profile.dir]);
-    return { profile: profile.name, dir: profile.dir, deps };
   },
 
   // 读取某个 profile 的工作区配置（.dshpkcfg）；不存在/非法 → config: null。
@@ -340,7 +321,7 @@ export const ENDPOINTS = {
   },
 
   // 市场详情（v5 r2）：懒加载 packs/<id>/manifest.json + README（fetchMarketPackDetail）。
-  // 中心索引不平铺 launchers / vendored / dshVersions（index 契约 §6.5），完整内容只有懒加载
+  // 中心索引不平铺 launchers / dshVersions（index 契约 §6.5），完整内容只有懒加载
   // manifest 里有——r2 = pickR2Fields(manifest) 原文透传，badges = r2Badges(manifest) 结构化
   // 徽标（文案由 UI 层按 kind 做 i18n），UI 详情弹窗直接渲染。
   'pack/market-detail': async ({ payload }) => {

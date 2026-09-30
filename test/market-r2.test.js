@@ -1,10 +1,10 @@
-// v5 r2 市场透传测试（manifest v5 §12/§13/§14 + index 契约 §3/§6.5）：
-// - pickR2Fields：launchers / vendored / dshVersions「有什么带什么」，缺失不设键；
-// - r2Badges：r2 字段 → 结构化展示徽标（需启动器 ≥ x / 冲突 / 内嵌 N 个依赖 / 兼容 DSH 版本集）；
-// - normalizeMarketPack：索引条目携带 r2 字段时宽容透传 + launcherRestricted 派生标记；
-// - fetchMarketPackDetail：懒加载 manifest 的 r2 字段带出；
+// v5 市场透传测试（manifest v5 §13/§14 + index 契约 §3/§6.5）：
+// - pickR2Fields：launchers / dshVersions「有什么带什么」，缺失不设键；
+// - r2Badges：字段 → 结构化展示徽标（需启动器 ≥ x / 冲突 / 兼容 DSH 版本集）；
+// - normalizeMarketPack：索引条目携带字段时宽容透传 + launcherRestricted 派生标记；
+// - fetchMarketPackDetail：懒加载 manifest 的字段带出；
 // - endpoints pack/view：launchersWarnings 透出（warn / info / 静默三分支，与 pack/install 同参）；
-// - endpoints pack/market-detail：manifest + README + r2 + badges。
+// - endpoints pack/market-detail：manifest + README + badges。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fsp from 'node:fs/promises';
@@ -63,16 +63,14 @@ async function writePack(packPath, manifest) {
 
 /* ------------------- pickR2Fields（r2 字段透传） ------------------- */
 
-test('pickR2Fields：三个 r2 字段有什么带什么（其余字段不透传）', () => {
-  const vendored = { 'dsh-pet': { version: '0.2.0', sha256: 'a'.repeat(64), size: 1, path: 'vendor/x.tgz' } };
+test('pickR2Fields：launchers / dshVersions 有什么带什么（其余字段不透传）', () => {
   assert.deepEqual(
     pickR2Fields({
       name: 'demo',
       launchers: { dshl: true },
-      vendored,
       dshVersions: ['0.1.1-rc.2', '0.1.0'],
     }),
-    { launchers: { dshl: true }, vendored, dshVersions: ['0.1.1-rc.2', '0.1.0'] },
+    { launchers: { dshl: true }, dshVersions: ['0.1.1-rc.2', '0.1.0'] },
   );
 });
 
@@ -81,13 +79,13 @@ test('pickR2Fields：缺省 / 非法 → 空对象或跳过（宽容消费，不
   assert.deepEqual(pickR2Fields(null), {});
   assert.deepEqual(pickR2Fields('nope'), {});
   assert.deepEqual(pickR2Fields({ name: 'x', bundles: [] }), {});
-  // 类型不符的 r2 字段静默跳过；dshVersions 只留非空字符串项
-  assert.deepEqual(pickR2Fields({ launchers: [], vendored: 'x', dshVersions: [42, '', '  '] }), {});
+  // 类型不符的字段静默跳过；dshVersions 只留非空字符串项；不认识的历史字段（vendored）忽略
+  assert.deepEqual(pickR2Fields({ launchers: [], vendored: { a: {} }, dshVersions: [42, '', '  '] }), {});
 });
 
 /* ------------------- r2Badges（市场详情徽标） ------------------- */
 
-test('r2Badges：launchers 简式/全式归一 → 需求/冲突徽标 + vendored 计数 + dshVersions', () => {
+test('r2Badges：launchers 简式/全式归一 → 需求/冲突徽标 + dshVersions', () => {
   const badges = r2Badges({
     launchers: {
       'official-desktop': '0.2.0',                          // 简式版本 → 需 ≥ 0.2.0
@@ -95,14 +93,12 @@ test('r2Badges：launchers 简式/全式归一 → 需求/冲突徽标 + vendore
       'dsh-cli': false,                                      // 简式冲突（无原因）
       'dsh-packforge-app': true,                             // 纯支持 → 不产生徽标
     },
-    vendored: { a: {}, b: {}, c: {} },
     dshVersions: ['0.1.0', '0.1.1-rc.2'],
   });
   assert.deepEqual(badges, [
     { kind: 'launcher-require', id: 'official-desktop', minVersion: '0.2.0' },
     { kind: 'launcher-conflict', id: 'dshl', reason: '补丁层冲突' },
     { kind: 'launcher-conflict', id: 'dsh-cli', reason: '' },
-    { kind: 'vendored', count: 3 },
     { kind: 'dsh-versions', versions: ['0.1.0', '0.1.1-rc.2'] },
   ]);
 });
@@ -115,7 +111,7 @@ test('r2Badges：无 r2 字段 / 纯支持 → 空列表（通用包）', () => 
 
 /* ------------------- normalizeMarketPack（索引条目宽容透传） ------------------- */
 
-test('normalizeMarketPack：条目携带 r2 字段时透传 + launcherRestricted 派生标记', () => {
+test('normalizeMarketPack：条目携带 launchers/dshVersions 时透传 + launcherRestricted 派生标记', () => {
   const p = normalizeMarketPack({
     name: 'demo',
     version: '1.0.0',
@@ -125,12 +121,10 @@ test('normalizeMarketPack：条目携带 r2 字段时透传 + launcherRestricted
     size: 10,
     launcherRestricted: true,
     launchers: { dshl: '0.1.0' },
-    vendored: { 'dsh-pet': {} },
     dshVersions: ['0.1.0'],
   });
   assert.equal(p.launcherRestricted, true);
   assert.deepEqual(p.launchers, { dshl: '0.1.0' });
-  assert.deepEqual(p.vendored, { 'dsh-pet': {} });
   assert.deepEqual(p.dshVersions, ['0.1.0']);
 });
 
@@ -144,7 +138,6 @@ test('normalizeMarketPack：无 r2 字段的条目 → launcherRestricted=false�
   });
   assert.equal(p.launcherRestricted, false);
   assert.ok(!('launchers' in p));
-  assert.ok(!('vendored' in p));
   assert.ok(!('dshVersions' in p));
 });
 
@@ -155,7 +148,6 @@ test('fetchMarketPackDetail：详情 manifest 的 r2 字段带出（r2 = pickR2F
   try {
     const manifest = baseManifest({
       launchers: { dshl: '0.1.0' },
-      vendored: { 'dsh-pet': { version: '0.2.0', sha256: 'a'.repeat(64), size: 1, path: 'vendor/x.tgz' } },
       dshVersions: ['0.1.0'],
     });
     await fsp.mkdir(path.join(home, 'packs', 'o.r'), { recursive: true });
@@ -167,7 +159,6 @@ test('fetchMarketPackDetail：详情 manifest 的 r2 字段带出（r2 = pickR2F
     assert.equal(d.readme, '# demo');
     assert.deepEqual(d.r2, {
       launchers: { dshl: '0.1.0' },
-      vendored: { 'dsh-pet': { version: '0.2.0', sha256: 'a'.repeat(64), size: 1, path: 'vendor/x.tgz' } },
       dshVersions: ['0.1.0'],
     });
   } finally {
@@ -238,7 +229,6 @@ test('pack/market-detail：懒加载 manifest + README + r2 + 结构化徽标', 
   try {
     const manifest = baseManifest({
       launchers: { dshl: '0.1.0', 'official-desktop': { supported: false, reason: 'x' } },
-      vendored: { a: {}, b: {} },
       dshVersions: ['0.1.0'],
     });
     await fsp.mkdir(path.join(home, 'packs', 'o.r'), { recursive: true });
@@ -253,13 +243,11 @@ test('pack/market-detail：懒加载 manifest + README + r2 + 结构化徽标', 
     assert.equal(r.readme, '# demo');
     assert.deepEqual(r.r2, {
       launchers: manifest.launchers,
-      vendored: { a: {}, b: {} },
       dshVersions: ['0.1.0'],
     });
     assert.deepEqual(r.badges, [
       { kind: 'launcher-require', id: 'dshl', minVersion: '0.1.0' },
       { kind: 'launcher-conflict', id: 'official-desktop', reason: 'x' },
-      { kind: 'vendored', count: 2 },
       { kind: 'dsh-versions', versions: ['0.1.0'] },
     ]);
   } finally {
