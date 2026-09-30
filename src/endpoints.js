@@ -219,6 +219,8 @@ export const ENDPOINTS = {
         payload?.vendorCoords && typeof payload.vendorCoords === 'object' && Object.keys(payload.vendorCoords).length
           ? payload.vendorCoords
           : undefined,
+      // v5 r3：上游探测三态（§8.6.1）——默认关闭（导出不联网）；显式传 true 才探测
+      probeUpstream: payload?.probeUpstream === true,
       force: payload?.force === true,
       mode: payload?.mode,
       content: payload?.content,

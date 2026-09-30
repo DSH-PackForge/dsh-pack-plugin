@@ -408,8 +408,83 @@ export function computeOfflineCoverage(lockText, plan) {
 /** 上游不存在的本地版本后缀（§8.6 第 3 条：禁止 `+` build metadata，npm 匹配会忽略）。 */
 const LOCAL_VERSION_SUFFIX = /-local\.\d+$/;
 
+/**
+ * 上游探测三态（v5 §8.6.1 打包端义务）：`exists` 存在 → 不内嵌；`missing` 不存在（404/410）→
+ * 自动 vendoring；`unknown` 探测失败（断网、超时、5xx）→ **保守内嵌**（宁可包大，不可包坏）。
+ *
+ * 注意历史：0.3.5 曾把探测整个删掉，因为当时用带 `^` 的范围版本去拼 registry URL 导致全 404、
+ * 把 8 个活着的依赖误判成「上游消失」。现在 `listProfileDependencies` 已把范围折算为已安装的
+ * **精确版本**，探测才可能可靠——所以这里按规范恢复能力，但**默认仍不启用**（由 opts 显式打开）：
+ * 探测意味着导出时联网，且断网时会按 `unknown` 保守内嵌，把包吹大。
+ *
+ * @returns {Promise<'exists'|'missing'|'unknown'>}
+ */
+export async function probeNpmUpstream(host, pkgName, version, registry = DEFAULT_REGISTRY, log = () => {}) {
+  if (typeof host.download !== 'function' || !pkgName || !version) return 'unknown';
+  const root = String(registry).replace(/\/+$/u, '');
+  // registry 元数据端点：精确版本存在时 200，不存在时 404（不接受范围写法）
+  const url = `${root}/${pkgName}/${version}`;
+  const tmp = await host.mkdtemp('dspack-probe-');
+  try {
+    const dest = host.joinPath(tmp, 'meta.json');
+    await host.download(url, dest);
+    const text = await host.readTextFile(dest);
+    if (!text) return 'unknown';
+    const json = JSON.parse(text);
+    return json && typeof json === 'object' ? 'exists' : 'unknown';
+  } catch (e) {
+    const msg = String(e?.message ?? e);
+    // 404 / 410 = 上游确实没有这个版本；其余（DNS/超时/5xx）算探测失败
+    if (/\b(404|410)\b/.test(msg)) return 'missing';
+    log(`上游探测未成功（${url}）：${msg} → 按「探测失败」保守内嵌`);
+    return 'unknown';
+  } finally {
+    await host.rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 /** registry 缺省地址（与安装侧一致，可被 opts.registry 覆盖）。 */
 const DEFAULT_REGISTRY = 'https://registry.npmjs.org/';
+
+/** codeload 归档地址（git 坐标的**上游原件**，v3 §8.1；顶层目录 `<repo>-<sha>/`）。 */
+export function codeloadUrl(owner, repo, sha) {
+  return `https://codeload.github.com/${owner}/${repo}/tar.gz/${sha}`;
+}
+
+/**
+ * 取 git 坐标的 codeload 原件（v5 §8.1「pnpm 从宿主下载的归档原件」）。
+ *
+ * 为什么要抓原件而不是自己按 npm 布局重打包：
+ *   - 原件与 pnpm lockfile 里那条 `resolution.integrity` **逐字节相等**（实测：dsh-wildmon 的
+ *     codeload 归档 sha512 与 DSH profile 记录的 integrity 完全一致）→ 不需要重算 integrity，
+ *     `random` 误差归零；
+ *   - 重打包属于 §8.6.3 的 local-modified 场景，会丢失「原件」语义。
+ * 取不到（断网 / 未钉 sha / 仓库已删）返回 null，由调用方回落重打包并记 reason。
+ *
+ * @returns {Promise<Uint8Array|null>}
+ */
+export async function fetchCodeloadTarball(host, coord, sha, log = () => {}) {
+  const git = parseGitCoord(coord);
+  if (!git) return null;
+  const pinned = String(sha ?? '');
+  if (!/^[0-9a-f]{7,40}$/i.test(pinned)) {
+    log(`git 坐标「${coord}」未钉死 commit sha（值为「${pinned}」）→ 无法取 codeload 原件`);
+    return null;
+  }
+  const url = codeloadUrl(git.owner, git.repo, pinned);
+  const tmp = await host.mkdtemp('dspack-codeload-');
+  try {
+    const dest = host.joinPath(tmp, 'repo.tgz');
+    await host.download(url, dest);
+    const bytes = await host.readFile(dest);
+    return bytes?.length ? bytes : null;
+  } catch (e) {
+    log(`codeload 原件取件失败（${url}）：${e?.message ?? e} → 回落 node_modules 重打包`);
+    return null;
+  } finally {
+    await host.rm(tmp, { recursive: true, force: true }).catch(() => {});
+  }
+}
 
 /**
  * 读 tarball 内 package.json（不落盘；损坏/缺失 → null）。**两种布局都要认**：
@@ -642,6 +717,8 @@ async function fetchRegistryTarball(host, pkgName, version, registry, log) {
  * 展开手动选择为最终内嵌清单（vendor 档位，workspace-config v1 r2 / pack-structure v3 §8.6）：
  * - `'off'`：清空（禁用内嵌，手动选择也忽略）；
  * - `'auto'`（默认）：手动选择 ∪ { vendor-blobs round-trip }——不联网探测，只复用已内嵌与手动勾选；
+ *   若显式打开 `opts.probeUpstream`，则按 §8.6.1 的探测三态补选：上游 `missing` / `unknown`
+ *   （保守）→ 自动内嵌，上游 `exists` → 不内嵌；
  * - `'full'`：手动选择 ∪ 全部直接依赖 ∪ 传递闭包（离线包形态；闭包沿 pnpm-lock.yaml 由
  *   collectVendoredForExport 的 closure 阶段收齐，安装端 computeOfflineCoverage 判定完整性）。
  * @returns {{selection: object, probed: string[]}} probed = 自动补选的坐标（供日志/结果展示）。
@@ -651,6 +728,7 @@ export async function expandVendorSelection(host, lookupDirs, manualSel, knob, o
   const mode = knob === 'full' ? 'full' : 'auto';
   const selection = { ...(manualSel ?? {}) };
   const probed = [];
+  const log = typeof opts.log === 'function' ? opts.log : () => {};
 
   const items = await listProfileDependencies(host, lookupDirs);
   for (const item of items) {
@@ -660,9 +738,47 @@ export async function expandVendorSelection(host, lookupDirs, manualSel, knob, o
       // full：直接依赖全部内嵌。
       selection[item.coord] = 'explicit';
       probed.push(item.coord);
+      continue;
+    }
+    // §8.6.1 探测三态（仅在显式打开时联网）：missing/unknown → 保守内嵌；exists → 交给网络
+    if (mode === 'auto' && opts.probeUpstream === true && item.kind === 'npm' && item.version) {
+      const verdict = await probeNpmUpstream(host, item.pkgName, item.version, opts.registry, log);
+      if (verdict === 'missing') {
+        selection[item.coord] = 'upstream-missing';
+        probed.push(item.coord);
+        log(`上游已消失：${item.coord}@${item.version} → 自动内嵌（reason: upstream-missing）`);
+      } else if (verdict === 'unknown') {
+        selection[item.coord] = 'explicit';
+        probed.push(item.coord);
+        log(`上游探测未成功：${item.coord}@${item.version} → 保守内嵌（宁可包大，不可包坏）`);
+      }
     }
   }
   return { selection, probed };
+}
+
+/**
+ * 打包端「离线可装性」自检（v3 §8.6.5 的精神）。
+ *
+ * 规范原话是「全量覆盖的包以离线模式 dry-run 试装一次」——导出器跑在 GUI 会话里、没有干净的
+ * 试装环境，这里做**等价静态校验**：随包 lockfile 里每个依赖能否由包内副本按 `name@version`
+ * 覆盖。它能抓到 dry-run 想抓的那类缺陷（传递闭包遗漏），且零副作用。
+ *
+ * @param {object} vendored manifest.vendored
+ * @param {object} entries 归档条目（path → bytes）
+ * @param {string} lockText 随包 pnpm-lock.yaml 文本
+ * @returns {{complete:boolean, missing:string[], total:number}|null} null = 无法判定
+ */
+export function coverageOfVendored(vendored, entries, lockText) {
+  if (!lockText || !vendored || !Object.keys(vendored).length) return null;
+  const byCoord = new Map();
+  for (const [key, e] of Object.entries(vendored)) {
+    const name = e?.kind === 'closure' ? e.name : vendorKeyToName(key);
+    if (!name) continue;
+    byCoord.set(key, { ...e, pkgName: name, bytes: entries?.[e.path] ?? null });
+  }
+  if (!byCoord.size) return null;
+  return computeOfflineCoverage(lockText, { active: true, byCoord });
 }
 
 /**
@@ -750,17 +866,28 @@ export async function collectVendoredForExport(host, lookupDirs, baseDependencie
         log(`vendored「${coord}」：本地重打包 v${r.version}（${r.fileCount} 个文件）`);
       }
     } else {
-      // git 坐标：从 node_modules 重打包（不依赖 git 环境）
-      const r = await repackageFromNodeModules(host, lookupDirs, item.pkgName, item.version);
-      bytes = r.bytes;
-      // r3 §2 + §12 约束 4：vendored 直接依赖的**值 = 包的精确版本**（不再是 commit sha！），
-      // 且必须与 tarball 内 version、vendored[].version 三处一致。来源（owner/repo#sha）不进键，
-      // 只留在随包 pnpm-lock.yaml 的 importer specifier 里，安装端按 §8.3 支 B 本地化。
-      // 重打包内容是本地产物（与 codeload 原件不一致是有意的）→ reason 记 local-modified。
-      version = r.version;
-      if (!reasonOut) reasonOut = 'local-modified';
-      notes.push(`${coord}：git 依赖按 node_modules 内容重打包为 v${r.version}（来源见随包 lockfile 的 specifier）`);
-      log(`vendored「${coord}」：git 依赖本地重打包 v${r.version}（${r.fileCount} 个文件）`);
+      // git 坐标：**优先取 codeload 原件**（v5 §8.1：字节与 lockfile 的 integrity 天然相等，
+      // 无需重算）；取不到才回落 node_modules 重打包。
+      const original = await fetchCodeloadTarball(host, coord, item.version, log);
+      if (original) {
+        bytes = original;
+        const gitSub = parseGitCoord(coord)?.subpath || undefined;
+        const tp = tarballPackageJson(original, gitSub);
+        // r3 §2 + §12 约束 4：vendored 直接依赖的**值 = 包的精确版本**（不再是 commit sha！），
+        // 且必须与 tarball 内 version、vendored[].version 三处一致。来源（owner/repo#sha）不进键，
+        // 只留在随包 pnpm-lock.yaml 的 importer specifier 里，安装端按 §8.3 支 B 本地化。
+        version = typeof tp?.version === 'string' && tp.version ? tp.version : item.version;
+        notes.push(`${coord}：内嵌 codeload 原件（v${version}，字节与上游一致，不需重算 integrity）`);
+        log(`vendored「${coord}」：codeload 原件（${original.length} 字节，v${version}）`);
+      } else {
+        const r = await repackageFromNodeModules(host, lookupDirs, item.pkgName, item.version);
+        bytes = r.bytes;
+        // 重打包内容是本地产物（与 codeload 原件不一致是有意的）→ reason 记 local-modified。
+        version = r.version;
+        if (!reasonOut) reasonOut = 'local-modified';
+        notes.push(`${coord}：codeload 原件不可得，已按 node_modules 内容重打包为 v${r.version}（来源见随包 lockfile 的 specifier）`);
+        log(`vendored「${coord}」：git 依赖本地重打包 v${r.version}（${r.fileCount} 个文件）`);
+      }
     }
 
     // 归档路径：vendor/<坐标编码>/<原文件名>；manifest vendored[].path 是权威
