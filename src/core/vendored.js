@@ -13,11 +13,49 @@
 //   （direct-mount，v3 §8.3）进 node_modules/<name>，并从重建的 package.json 依赖中剔除。
 import { untar, buildTarball } from './tar.js';
 import { parseGitCoord, parsePkgGitSpec, VENDORED_REASONS } from './manifest.js';
+import { findImporterDep } from './lockfile.js';
 
 const decoder = new TextDecoder();
 
 /** DSHL 方言依赖 spec 前缀（v3 §8.5：`vendor:<file>.tgz`）。 */
 const DIALECT_SPEC = /^vendor:/i;
+
+/** v5 r3 §2：`vendor:<包名>` 依赖键前缀（剥去**一次**前导前缀后余下即包名）。 */
+export const VENDOR_KEY_PREFIX = 'vendor:';
+
+/** npm 包名形状（`name` / `@scope/name`，不含协议字符）。 */
+export function isPlausiblePkgName(name) {
+  return typeof name === 'string' && /^(@[a-z0-9][\w.-]*\/)?[a-z0-9][\w.-]*$/i.test(name);
+}
+
+/**
+ * 依赖键 → 包名：带 `vendor:` 前缀返回包名，裸键返回 null（裸键 = 只从网络）。
+ * 只剥**一次**：`vendor:vendor:x` 剥出 `vendor:x`，它不是合法包名 → 返回 null（判非法）。
+ */
+export function vendorKeyToName(key) {
+  const s = String(key ?? '');
+  if (!s.startsWith(VENDOR_KEY_PREFIX)) return null;
+  const name = s.slice(VENDOR_KEY_PREFIX.length);
+  return isPlausiblePkgName(name) ? name : null;
+}
+
+/**
+ * 闭包条目键（v5 r3 §12 约束 1：`name@version`，不带前缀；同名多版本必须带版本）。
+ * @returns {{name: string, version: string}|null}
+ */
+export function parseClosureKey(key) {
+  const s = String(key ?? '');
+  if (!s || s.startsWith(VENDOR_KEY_PREFIX)) return null;
+  const at = s.lastIndexOf('@');
+  if (at <= 0 || at === s.length - 1) return null;
+  const name = s.slice(0, at);
+  const version = s.slice(at + 1);
+  if (!isPlausiblePkgName(name) || !version || version.includes('@')) return null;
+  return { name, version };
+}
+
+/** registry 版本段的形状（semver 前缀；`0.3.0-local.1` 这类预发布也算）。 */
+const SEMVER_LIKE = /^\d+\.\d+\.\d+/;
 
 /** zip entries 里 vendor/ 下的**文件**条目（排除 vendor.json 本身与目录占位）。 */
 function vendorFileEntries(entries) {
@@ -94,23 +132,67 @@ export async function resolveVendoredPlan(host, manifest, entries, log = () => {
     return { active: false, byCoord: new Map() };
   }
 
-  // 显式条目优先（§8.5：与方言并存时显式 vendored{} 优先）
-  const byCoord = new Map(Object.entries(dialect).map(([k, v]) => [k, { ...v }]));
-  for (const [coord, e] of Object.entries(explicit)) byCoord.set(coord, { ...e });
+  // 显式条目优先（§8.5：与方言并存时显式 vendored{} 优先）。方言条目由 vendor/vendor.json
+  // 负责（键 = 包名、来源即包内），不参与下面 r3 的键规则。
+  const byCoord = new Map(Object.entries(dialect).map(([k, v]) => [k, { ...v, pkgName: k }]));
+  const shadowedDialectPaths = []; // 被显式条目接管的方言 tarball：仍属「已登记」，只是不再使用
+  for (const [key, raw] of Object.entries(explicit)) {
+    const e = { ...raw };
+    const name = vendorKeyToName(key);
+    if (name) {
+      e.kind = 'direct';
+      e.pkgName = name;
+      // §8.5「显式条目优先」：同名的方言隐式条目被接管 → 从计划里丢弃（否则它的 tarball
+      // 会被要求必须存在，等于「丢弃」没生效）。其路径仍登记在案（由 vendor.json 声明）。
+      const shadowed = byCoord.get(name);
+      if (shadowed?.dialect) {
+        shadowedDialectPaths.push(safeVendorPath(shadowed.path));
+        byCoord.delete(name);
+      }
+    } else {
+      const closure = parseClosureKey(key);
+      if (!closure) {
+        // 裸键 = 已废弃的 r2 形态（v5 r3 §12 约束 1：裸键不得出现在 vendored，来源冲突 → 拒装）
+        throw new Error(`vendored 条目「${key}」键非法：直接依赖必须用 vendor:<包名>、闭包条目必须用 name@version；裸键是已废弃的 r2 形态 → 拒装`);
+      }
+      if (e.kind !== 'closure') {
+        throw new Error(`vendored 条目「${key}」形如闭包键但未声明 kind:"closure"（v5 r3 §12 约束 1）`);
+      }
+      if (typeof e.name !== 'string' || !e.name) throw new Error(`闭包条目「${key}」缺少 name（v5 r3 §12）`);
+      if (e.name !== closure.name) throw new Error(`闭包条目「${key}」的 name（${e.name}）与键不符`);
+      e.pkgName = closure.name;
+      e.version = e.version ?? closure.version;
+    }
+    byCoord.set(key, e);
+  }
 
-  // 对账：vendored key 必须 ∈ dependencies（dshhome 为各 profile 依赖并集）∪ lockfile packages
-  // （v5 §12 约束 1：full 档闭包条目以随包 pnpm-lock.yaml 为准放行，key = npm 包名）
+  // 对账（v5 r3 §12 约束 1）：
+  //  - 直接依赖：vendor:<包名> 必须 ∈ dependencies（dshhome 为各 profile 依赖并集）；
+  //  - 闭包条目：必须能在随包 pnpm-lock.yaml 里按 name@version 反查到（**反查 lockfile 是防夹带
+  //    的安全约束**；缺 lockfile 就无法确认来源 → 拒装）。
   const deps = allDependencyCoords(manifest);
-  let lockNames = null;
-  if (entries['pnpm-lock.yaml']) lockNames = lockfilePackageNames(decoder.decode(entries['pnpm-lock.yaml']));
-  for (const coord of byCoord.keys()) {
-    if (!deps.has(coord) && !lockNames?.has(coord)) {
-      throw new Error(`vendored 条目「${coord}」不在 dependencies ∪ lockfile packages 中（对账失败，见 manifest v5 §12 约束 1）`);
+  const lockText = entries['pnpm-lock.yaml'] ? decoder.decode(entries['pnpm-lock.yaml']) : null;
+  const lockEntries = lockText ? lockfilePackageEntries(lockText) : null;
+  const lockKeys = lockEntries ? new Set(lockEntries.map((x) => `${x.name}@${x.version}`)) : null;
+  for (const [key, e] of byCoord) {
+    if (e.dialect) continue;
+    if (e.kind === 'closure') {
+      if (!lockKeys) throw new Error(`闭包条目「${key}」需要随包 pnpm-lock.yaml 才能反查来源（防夹带，v5 r3 §12 约束 1）→ 拒装`);
+      if (!lockKeys.has(`${e.pkgName}@${e.version}`)) {
+        throw new Error(`闭包条目「${key}」不在随包 pnpm-lock.yaml 的 packages:/snapshots: 中（防夹带校验失败）→ 拒装`);
+      }
+      continue;
+    }
+    if (!deps.has(key)) {
+      throw new Error(`vendored 条目「${key}」不在 dependencies 中（vendor: 键必须 ∈ dependencies，见 v5 §12 约束 1）`);
     }
   }
 
   // vendor/ 内只允许 .tgz 且必须逐一经 vendored 登记（§8.2：未登记文件 → 拒装）
-  const registered = new Set([...byCoord.values()].map((e) => safeVendorPath(e.path)));
+  const registered = new Set([
+    ...[...byCoord.values()].map((e) => safeVendorPath(e.path)),
+    ...shadowedDialectPaths, // 被显式条目接管的方言 tarball 由 vendor.json 声明，不算未登记
+  ]);
   for (const p of files) {
     if (!p.endsWith('.tgz')) throw new Error(`vendor/ 内只允许 .tgz 文件（发现 ${p}）`);
     if (!registered.has(p)) throw new Error(`vendor/ 内存在未登记文件：${p}（vendored 清单无此条目）→ 拒装`);
@@ -127,6 +209,20 @@ export async function resolveVendoredPlan(host, manifest, entries, log = () => {
     const sha = await host.sha256(bytes);
     if (sha !== String(e.sha256 || '').toLowerCase()) {
       throw new Error(`vendored「${coord}」sha256 校验失败：期望 ${e.sha256}，实际 ${sha}`);
+    }
+    // 读 tarball 内 package.json 核对 name / version（v5 §8.3、§11.1.4；也是「三处一致」的兜底）：
+    // 键上只有包名——若包里装的是另一个包，名字就对不上；版本对不上则是打包端漏了重算。
+    // 兼容两种布局（npm `package/` 与 codeload `<repo>-<sha>/`），子目录 git 坐标按 lockfile 的
+    // `&path:` 下探。
+    const tp = tarballPackageJson(bytes, subpathFromLockfile(lockText, e.pkgName));
+    if (!tp || typeof tp.name !== 'string' || !tp.name) {
+      throw new Error(`vendored「${coord}」tarball 内 package.json 缺失或无可读 name → 拒装`);
+    }
+    if (tp.name !== e.pkgName) {
+      throw new Error(`vendored「${coord}」tarball 内包名（${tp.name}）与键不符（期望 ${e.pkgName}）→ 拒装`);
+    }
+    if (e.version && tp.version !== e.version) {
+      throw new Error(`vendored「${coord}」tarball 内版本（${tp.version}）与声明版本（${e.version}）不一致（三处一致，v5 §12 约束 4）`);
     }
     e.bytes = bytes;
     log(`vendored 预检通过：${coord} → ${rel}（${bytes.length} 字节）`);
@@ -176,9 +272,13 @@ export function coordDirName(coord) {
   return String(coord).replace(/[^a-zA-Z0-9-]+/g, '__');
 }
 
-/** tarball 在 vendor-blobs 下的相对路径（'/' 分隔，供 file: spec 使用）。 */
-export function blobRelPath(coord, entry) {
-  return `vendor-blobs/${coordDirName(coord)}/${entry.path.replace(/^vendor\//, '')}`;
+/**
+ * tarball 在 vendor-blobs 下的相对路径（'/' 分隔，供 file: spec 使用）。
+ * 子目录取**包名**（r3 §2：包名以 tarball 内 `package.json` 的 name 为准）——比坐标更稳、可读，
+ * 也让 r2→r3 的同名依赖落点不变。
+ */
+export function blobRelPath(key, entry) {
+  return `vendor-blobs/${coordDirName(entry?.pkgName ?? key)}/${entry.path.replace(/^vendor\//, '')}`;
 }
 
 /** 把 vendored tarball 落盘到 <target>/vendor-blobs/（file: 引用的实体）。 */
@@ -268,19 +368,28 @@ export function lockfilePackageNames(lockText) {
  */
 export function computeOfflineCoverage(lockText, plan) {
   if (!plan?.active) return null;
-  const names = lockfilePackageNames(lockText);
-  if (!names) return null;
-  const vendoredNames = new Set();
-  for (const [coord, e] of plan.byCoord) {
-    const git = parseGitCoord(coord);
-    vendoredNames.add(git ? git.name : coord);
-    // git 坐标：lockfile 以**包名**登记（如 `other-theme@github:owner/repo#sha`），
-    // 与仓库名折算可能不同 → 把 tarball 内 package.json 的真实包名一并计入覆盖集。
+  const entries = lockfilePackageEntries(lockText);
+  if (!entries?.length) return null;
+  const coveredKeys = new Set();  // name@version（registry 节点：必须版本级命中）
+  const coveredNames = new Set(); // 名称兜底（git / file: 节点的版本段不是 semver）
+  for (const [key, e] of plan.byCoord) {
+    const name = e.pkgName ?? vendorKeyToName(key) ?? parseClosureKey(key)?.name ?? null;
+    if (!name) continue;
+    coveredNames.add(name);
     const tp = e?.bytes ? tarballPackageJson(e.bytes) : null;
-    if (tp?.name) vendoredNames.add(tp.name);
+    const version = e.version ?? tp?.version ?? null;
+    if (version) coveredKeys.add(`${name}@${version}`);
   }
-  const missing = [...names].filter((n) => !vendoredNames.has(n));
-  return { complete: missing.length === 0, missing, total: names.size };
+  const missing = entries
+    .filter((x) => {
+      if (coveredKeys.has(`${x.name}@${x.version}`)) return false;
+      // registry 版本（semver）必须版本级命中——同名不同版本不算覆盖，否则 --offline 会缺件；
+      // git / file: 等非 semver 版本段按包名命中即可（lockfile 里的版本段是 URL/路径，不是版本）。
+      if (SEMVER_LIKE.test(String(x.version))) return true;
+      return !coveredNames.has(x.name);
+    })
+    .map((x) => `${x.name}@${x.version}`);
+  return { complete: missing.length === 0, missing, total: entries.length };
 }
 
 /* ---------------------------------------------------------------------------
@@ -302,16 +411,52 @@ const LOCAL_VERSION_SUFFIX = /-local\.\d+$/;
 /** registry 缺省地址（与安装侧一致，可被 opts.registry 覆盖）。 */
 const DEFAULT_REGISTRY = 'https://registry.npmjs.org/';
 
-/** 读 tarball 内 package.json（不落盘；损坏/缺失 → null）。 */
-function tarballPackageJson(tgz) {
+/**
+ * 读 tarball 内 package.json（不落盘；损坏/缺失 → null）。**两种布局都要认**：
+ *   - npm 布局：`package/package.json`（registry 原件、以及本工具的重打包产物）；
+ *   - codeload 布局：顶层 `<repo>-<sha>/package.json`（git 坐标的**上游原件**，见 v5 §8.1）
+ *     —— 实测 codeload 归档顶层是 `<repo>-<sha>/`，不是 `package/`，只认 npm 布局会让
+ *     阶段 0 把自家 git 内嵌条目全判成「tarball 内 package.json 缺失」而拒装。
+ *   - 带 `#path:/子目录` 的 git 坐标再下探一层 `<repo>-<sha>/<子目录>/package.json`。
+ * @param {Uint8Array} tgz
+ * @param {string} [subpath] git 坐标的子目录（`github:o/r#path:/x` 的 `x`）
+ */
+function tarballPackageJson(tgz, subpath) {
   try {
     const files = untar(tgz);
-    const raw = files['package/package.json'];
-    if (!raw) return null;
-    return JSON.parse(new TextDecoder().decode(raw));
+    const candidates = ['package/package.json'];
+    const roots = new Set();
+    for (const p of Object.keys(files)) {
+      const seg = p.split('/');
+      if (seg.length === 2 && seg[1] === 'package.json' && seg[0] && seg[0] !== 'package') roots.add(seg[0]);
+    }
+    for (const root of roots) {
+      const sub = String(subpath ?? '').replace(/^\/+|\/+$/g, '');
+      // 子目录优先：monorepo 根也有 package.json，先探根就会拿到「仓库根」的名字而误判
+      if (sub) candidates.push(`${root}/${sub}/package.json`);
+      candidates.push(`${root}/package.json`);
+    }
+    for (const rel of candidates) {
+      const raw = files[rel];
+      if (!raw) continue;
+      const json = JSON.parse(new TextDecoder().decode(raw));
+      if (json && typeof json === 'object') return json;
+    }
+    return null;
   } catch {
     return null;
   }
+}
+
+/** 从随包 lockfile 里**该包**的 importer specifier 取 git 子目录（`…&path:pkg` / `…#path:/pkg`）。 */
+function subpathFromLockfile(lockText, pkgName) {
+  if (!lockText || !pkgName) return null;
+  const dep = findImporterDep(lockText, pkgName);
+  const spec = String(dep?.specifier ?? '');
+  const m = /[#&]path:?\/?([\w./@-]+)/.exec(spec);
+  if (!m) return null;
+  const sub = m[1].replace(/^\/+|\/+$/g, '');
+  return sub || null;
 }
 
 /**
@@ -574,6 +719,8 @@ export async function collectVendoredForExport(host, lookupDirs, baseDependencie
     if (!item) throw new Error(`选择内嵌的依赖「${coord}」不在 profile 依赖中`);
     let bytes = null;
     let version = item.version;
+    // reason 可被下面的分支改写（git 重打包 = 与上游不一致的本地内容），故用可变量。
+    let reasonOut = reason;
 
     if (item.kind === 'vendored') {
       // round-trip：直接复用安装时落盘的 tarball 字节（版本后缀已固化，无需改写）
@@ -596,12 +743,17 @@ export async function collectVendoredForExport(host, lookupDirs, baseDependencie
         log(`vendored「${coord}」：本地重打包 v${r.version}（${r.fileCount} 个文件）`);
       }
     } else {
-      // git 坐标：从 node_modules 重打包（不依赖 git 环境；版本 = 钉死的 sha）
+      // git 坐标：从 node_modules 重打包（不依赖 git 环境）
       const r = await repackageFromNodeModules(host, lookupDirs, item.pkgName, item.version);
       bytes = r.bytes;
-      version = item.version;
-      notes.push(`${coord}：git 依赖按 node_modules 内容重打包`);
-      log(`vendored「${coord}」：git 依赖本地重打包（${r.fileCount} 个文件）`);
+      // r3 §2 + §12 约束 4：vendored 直接依赖的**值 = 包的精确版本**（不再是 commit sha！），
+      // 且必须与 tarball 内 version、vendored[].version 三处一致。来源（owner/repo#sha）不进键，
+      // 只留在随包 pnpm-lock.yaml 的 importer specifier 里，安装端按 §8.3 支 B 本地化。
+      // 重打包内容是本地产物（与 codeload 原件不一致是有意的）→ reason 记 local-modified。
+      version = r.version;
+      if (!reasonOut) reasonOut = 'local-modified';
+      notes.push(`${coord}：git 依赖按 node_modules 内容重打包为 v${r.version}（来源见随包 lockfile 的 specifier）`);
+      log(`vendored「${coord}」：git 依赖本地重打包 v${r.version}（${r.fileCount} 个文件）`);
     }
 
     // 归档路径：vendor/<坐标编码>/<原文件名>；manifest vendored[].path 是权威
@@ -612,17 +764,20 @@ export async function collectVendoredForExport(host, lookupDirs, baseDependencie
     if (entries[entryPath]) throw new Error(`vendored 归档路径冲突：${entryPath}`);
     entries[entryPath] = bytes;
 
-    // dependencies 改写：删旧 key（file: 场景是 pkgName），写 坐标 → 最终版本（三处一致）
+    // dependencies 改写（v5 r3 §2）：vendored 直接依赖的键改取 **tarball 内包名 + `vendor:` 前缀**
+    // —— 来源由键唯一确定（只从包内），老启动器遇此前缀会响亮失败（预期行为，见 v3 §8.5 兼容矩阵）。
+    // 同时删掉可能并存的裸键（npm 包名 / git 坐标 / 旧 file: 形态）：§2 规定同一包名不得两类并存。
+    const vendorKey = `${VENDOR_KEY_PREFIX}${item.pkgName}`;
     delete dependencies[item.pkgName];
     delete dependencies[coord];
-    dependencies[coord] = version;
+    dependencies[vendorKey] = version;
 
-    vendored[coord] = {
+    vendored[vendorKey] = {
       version,
       sha256: await host.sha256(bytes),
       size: bytes.length,
       path: entryPath,
-      ...(reason ? { reason } : {}),
+      ...(reasonOut ? { reason: reasonOut } : {}),
     };
     cover(coord, bytes);
   }
@@ -666,12 +821,16 @@ export async function collectVendoredForExport(host, lookupDirs, baseDependencie
       const entryPath = `vendor/${coordDirName(name)}/${base}`;
       if (entries[entryPath]) throw new Error(`vendored 归档路径冲突：${entryPath}`);
       entries[entryPath] = bytes;
-      vendored[name] = {
+      // 闭包条目（v5 r3 §12 约束 1）：键 = `name@version` + `kind:"closure"` + `name`；
+      // 不在 dependencies 中，由随包 pnpm-lock.yaml 反查放行。reason 是直接依赖视角的枚举，
+      // 闭包条目不带（可选字段）。
+      vendored[`${name}@${version}`] = {
+        kind: 'closure',
+        name,
         version,
         sha256: await host.sha256(bytes),
         size: bytes.length,
         path: entryPath,
-        reason: 'explicit',
       };
       covered.add(name);
     }

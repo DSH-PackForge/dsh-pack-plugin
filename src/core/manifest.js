@@ -4,7 +4,7 @@
 //
 // 注意：与 vendored.js 互相 import（本模块需要 lockfilePackageNames 做闭包条目对账放行）。
 // 循环依赖是安全的：双方都只在**运行时函数调用**里使用对方绑定，顶层求值互不依赖。
-import { lockfilePackageNames } from './vendored.js';
+import { lockfilePackageEntries, parseClosureKey, vendorKeyToName, VENDOR_KEY_PREFIX } from './vendored.js';
 
 const ICON_PATTERN = /^icons?\/.+\.(png|jpe?g|webp|ico|svg)$/i;
 
@@ -181,6 +181,14 @@ function parseJson(raw) {
 export function coordsToPkgDeps(dependencies) {
   const out = {};
   for (const [coord, version] of Object.entries(dependencies ?? {})) {
+    // v5 r3 §2：`vendor:<包名>` 是「只从包内」的键，落进 package.json 时必须用**包名**
+    // （值由安装端按 §8.3 本地化改写为 file: 指向包内副本）。带 `:` 的键绝不能交给 pnpm
+    // ——实测 ERR_PNPM_INVALID_DEPENDENCY_NAME。
+    const vendoredName = vendorKeyToName(coord);
+    if (vendoredName) {
+      out[vendoredName] = version;
+      continue;
+    }
     const git = parseGitCoord(coord);
     if (git) {
       const ref = version === 'latest' ? '' : `#${version}`;
@@ -401,20 +409,27 @@ const VENDORED_REASONS = new Set(['upstream-missing', 'unpublished', 'local-modi
 export { VENDORED_REASONS };
 
 /**
- * vendored{}（§12）：条目五字段 + key ∈ dependencies ∪ lockfile packages 对账 + version 一致性。
- * 闭包条目（key ∈ 随包 pnpm-lock.yaml 的 packages 名集，vendor=full 档传递依赖）：不在
- * dependencies 中，无钉死版本 → 跳过版本一致性检查（版本基准是 lockfile，见 v5 §12 约束 1）。
+ * vendored{}（v5 r3 §12）：两类键 + 条目字段 + 双向对账 + 键侧一致性。
+ *  - 直接依赖：键 `vendor:<包名>`，必须 ∈ dependencies 且与 dependencies 钉死版本一致；
+ *  - 闭包条目：键 `name@version` + `kind:"closure"` + `name` 必填，必须能在随包
+ *    pnpm-lock.yaml 的 packages:/snapshots: 里反查到（反查 lockfile 是防夹带的安全约束）；
+ *  - 裸键一律拒（r2 废弃形态：来源冲突）；同一包名不得同时以两类出现（§2）。
  */
 function validateVendored(m, lockText) {
   const errors = [];
-  if (m.vendored === undefined) return errors;
-  if (typeof m.vendored !== 'object' || m.vendored === null || Array.isArray(m.vendored)) {
-    return ['manifest.vendored 必须是对象（坐标 → VendoredEntry）'];
+  // 注意：`vendored` 缺失也要往下走 —— dependencies 里带 `vendor:` 前缀却没有对应条目同样是错
+  // （v5 §2：vendor: 键 = 只从包内，vendored{} 必有条目）。
+  if (m.vendored !== undefined && (typeof m.vendored !== 'object' || m.vendored === null || Array.isArray(m.vendored))) {
+    return ['manifest.vendored 必须是对象（依赖键 → VendoredEntry）'];
   }
+  const vendorMap = m.vendored ?? {};
   const deps = dependencyCoords(m);
-  const lockNames = lockText ? lockfilePackageNames(lockText) : null;
-  for (const [coord, e] of Object.entries(m.vendored)) {
-    const at = `vendored[${coord}]`;
+  const lockEntries = lockText ? lockfilePackageEntries(lockText) : null;
+  const lockKeys = lockEntries ? new Set(lockEntries.map((e) => `${e.name}@${e.version}`)) : null;
+  const declared = new Set(Object.keys(vendorMap));
+
+  for (const [key, e] of Object.entries(vendorMap)) {
+    const at = `vendored[${key}]`;
     if (!e || typeof e !== 'object' || Array.isArray(e)) {
       errors.push(`${at} 必须是对象`);
       continue;
@@ -432,13 +447,48 @@ function validateVendored(m, lockText) {
     if (e.reason !== undefined && !VENDORED_REASONS.has(e.reason)) {
       errors.push(`${at}.reason 仅支持 ${[...VENDORED_REASONS].join(' / ')}`);
     }
-    if (!deps.has(coord)) {
-      if (!lockNames?.has(coord)) {
-        errors.push(`${at} 不在 dependencies ∪ lockfile packages 中（vendored key 必须 ∈ dependencies，闭包条目以 pnpm-lock.yaml 为准放行，见 v5 §12 约束 1）`);
+    if (e.kind !== undefined && e.kind !== 'direct' && e.kind !== 'closure') {
+      errors.push(`${at}.kind 仅支持 "direct" / "closure"`);
+    }
+
+    const name = vendorKeyToName(key);
+    if (name) {
+      if (e.kind === 'closure') errors.push(`${at} kind:"closure" 与 vendor: 前缀不能同时出现`);
+      if (!deps.has(key)) {
+        errors.push(`${at} 不在 dependencies 中（vendor: 键必须 ∈ dependencies，见 v5 §12 约束 1）`);
+      } else if (typeof e.version === 'string' && e.version && deps.get(key) !== e.version) {
+        errors.push(`${at}.version（${e.version}）与 dependencies 钉死的版本（${deps.get(key)}）不一致`);
       }
-      // 闭包条目：无 dependencies 钉死版本 → 跳过版本一致性检查
-    } else if (typeof e.version === 'string' && e.version && deps.get(coord) !== e.version) {
-      errors.push(`${at}.version（${e.version}）与 dependencies 钉死的版本（${deps.get(coord)}）不一致`);
+      continue;
+    }
+
+    const closure = parseClosureKey(key);
+    if (!closure) {
+      errors.push(`${at} 键非法：直接依赖必须用 vendor:<包名>、闭包条目必须用 name@version（裸键是已废弃的 r2 形态 → 拒装，见 v5 r3 §12 约束 1）`);
+      continue;
+    }
+    if (e.kind !== 'closure') errors.push(`${at} 形如闭包键但未声明 kind:"closure"（v5 r3 §12 约束 1）`);
+    if (typeof e.name !== 'string' || !e.name) {
+      errors.push(`${at}.name 闭包条目必填（npm 包名）`);
+    } else if (e.name !== closure.name) {
+      errors.push(`${at}.name（${e.name}）与键中的包名（${closure.name}）不一致`);
+    }
+    if (!lockKeys) {
+      errors.push(`${at} 闭包条目需要随包 pnpm-lock.yaml 才能反查来源（防夹带，v5 r3 §12 约束 1）`);
+    } else if (!lockKeys.has(`${closure.name}@${closure.version}`)) {
+      errors.push(`${at} 闭包条目不在随包 pnpm-lock.yaml 的 packages:/snapshots: 中（防夹带校验失败）`);
+    }
+  }
+
+  // 反向对账（v5 r3 §2/§12）：每个 vendor: 依赖键都必须有 vendored 条目；同一包名不得两类并存
+  for (const [depKey] of deps) {
+    const pkg = vendorKeyToName(depKey);
+    if (!pkg) continue;
+    if (!declared.has(depKey)) {
+      errors.push(`dependencies["${depKey}"] 缺少对应的 vendored 条目（vendor: 键 = 只从包内，vendored{} 必有条目）`);
+    }
+    if (deps.has(pkg)) {
+      errors.push(`依赖「${pkg}」同时以裸键与 vendor: 键出现（来源冲突 → 拒装，见 v5 §2）`);
     }
   }
   return errors;

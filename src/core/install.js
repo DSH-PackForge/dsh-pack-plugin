@@ -2,7 +2,7 @@ import { parseDspack, decodeText } from './dspack.js';
 import { validateManifest, coordsToPkgDeps, sanitizeSlug, parseGitCoord, normalizeLaunchers, compareLauncherVersions } from './manifest.js';
 import { listInstalledDshVersions, sortVersionsDesc } from './discovery.js';
 import { storeHomeRel } from './home-store.js';
-import { resolveVendoredPlan, isDialectSpec, directMount, materializeVendorBlobs, blobRelPath, computeOfflineCoverage, allDependencyCoords } from './vendored.js';
+import { resolveVendoredPlan, isDialectSpec, directMount, materializeVendorBlobs, blobRelPath, computeOfflineCoverage, allDependencyCoords, vendorKeyToName, VENDOR_KEY_PREFIX } from './vendored.js';
 
 /**
  * 一键安装：读取本地/URL 的 .dspack → 校验头 & manifest → 按 type 分支安装。
@@ -387,7 +387,11 @@ async function mountDialectDeps(host, target, deps, plan, log) {
   for (const [name, spec] of Object.entries(deps ?? {})) {
     if (!isDialectSpec(spec)) continue;
     const entry = plan.byCoord.get(name);
-    if (!entry) throw new Error(`方言依赖「${name}」在 vendor/vendor.json 中无对应条目（拒装）`);
+    if (!entry) {
+      // 该包已被显式 `vendor:<名>` 条目接管（v3 §8.5 显式优先）→ 方言条目已从计划里丢弃，不再直挂
+      if (plan.byCoord.has(`${VENDOR_KEY_PREFIX}${name}`)) continue;
+      throw new Error(`方言依赖「${name}」在 vendor/vendor.json 中无对应条目（拒装）`);
+    }
     await directMount(host, target, name, entry, log);
     mounted.push(name);
   }
@@ -551,8 +555,8 @@ async function materializeHomeOverrides(host, homeRoot, entries, log) {
 }
 
 /**
- * vendored 坐标在**重建的 package.json** 上的 spec 决策（v3 §8.3 统一算法）：
- * - 显式 vendored 条目 → `file:vendor-blobs/...`（本地优先；其余坐标照常走 registry，互为兜底）；
+ * vendored 依赖在**重建的 package.json** 上的 spec 决策（v3 §8.3 统一算法）：
+ * - `vendor:<包名>` 条目 → package.json 里落**包名**，值改写为 `file:vendor-blobs/...`；
  * - DSHL 方言 spec（`vendor:<file>.tgz`）→ 从依赖中剔除（tarball 直挂，不传给 pnpm）；
  * - 非 vendored 坐标 → 原样。manifest 不动（规范禁止安装端改写包内字节，改写仅发生在重建产物上）。
  */
@@ -560,8 +564,10 @@ function applyVendoredSpecs(pkgDeps, manifestDeps, plan) {
   if (!plan?.active) return;
   for (const [coord, spec] of Object.entries(manifestDeps ?? {})) {
     const entry = plan.byCoord.get(coord);
+    // v5 r3 §2：`vendor:<包名>` 的包名 = 剥去一次前缀；裸坐标仍按 git 折算 / 原名（§2 转换表）
+    const vendoredName = vendorKeyToName(coord);
     const git = parseGitCoord(coord);
-    const pkgName = git ? git.name : coord;
+    const pkgName = vendoredName ?? (git ? git.name : coord);
     if (isDialectSpec(spec)) {
       delete pkgDeps[pkgName]; // 方言：直挂，不传给 pnpm（v3 §8.5）
       continue;
