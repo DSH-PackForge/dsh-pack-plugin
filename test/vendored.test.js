@@ -4,7 +4,7 @@
 //   tarball 内 name/version 三处一致、闭包条目按随包 pnpm-lock.yaml 反查防夹带、方言归一、显式优先）；
 // - resolveDshVersion 交集决策；
 // - computeOfflineCoverage 版本敏感覆盖判定（missing 为 `name@version`）；
-// - installPack 端到端（file: 改写 + --prefer-offline + 方言直挂，pnpm 以 stub 替身）。
+// - installPack 端到端（file: 改写 + 本地化后 frozen+trust + 方言直挂，pnpm 以 stub 替身）。
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fsp from 'node:fs/promises';
@@ -70,6 +70,8 @@ function fsHost(extra = {}) {
     async rm(p, o = {}) { await fsp.rm(p, { recursive: o.recursive !== false, force: true }); },
     async mkdtemp(prefix) { return await fsp.mkdtemp(path.join(os.tmpdir(), prefix)); },
     async sha256(data) { return sha256(data); },
+    /** pnpm lockfile 的 integrity payload（本地化时要现算 sha512 覆盖）。 */
+    async sha512(data) { return crypto.createHash('sha512').update(data).digest('base64'); },
     async sha256File(p) { return sha256(await fsp.readFile(p)); },
     async move(from, to) { await fsp.mkdir(path.dirname(to), { recursive: true }); await fsp.rename(from, to); },
     ...extra,
@@ -484,10 +486,11 @@ test('installPack：显式 vendored → vendor-blobs 落盘 + package.json file:
     assert.equal(pkg.dependencies['vendor:dsh-pet'], undefined, '`vendor:` 前缀不能漏进重建的 package.json');
     const blob = await fsp.readFile(path.join(target, 'vendor-blobs', 'dsh-pet', 'npm__dsh-pet', 'dsh-pet-0.2.0-local.1.tgz'));
     assert.equal(blob.length, tgz.length);
-    // pnpm 走 --prefer-offline（r2/r3 统一算法），且不再带 --frozen-lockfile
+    // r3 §8.3：本地化后按规范走 frozen+trust；此夹具没有 lockfile → 无法 frozen，只带 --trust-lockfile
     assert.equal(calls.length, 1);
-    assert.ok(calls[0].args.includes('--prefer-offline'));
-    assert.ok(!calls[0].args.includes('--frozen-lockfile'));
+    assert.ok(calls[0].args.includes('--trust-lockfile'));
+    assert.ok(!calls[0].args.includes('--prefer-offline'), 'r3 已删掉 --prefer-offline（来源由键唯一确定）');
+    assert.ok(!calls[0].args.includes('--frozen-lockfile'), '无 lockfile 时不能 frozen');
     // 结果摘要：used 是 manifest 侧的 `vendor:<包名>` 键；显式条目不走直挂
     assert.equal(r.vendored.active, true);
     assert.deepEqual(r.vendored.used, ['vendor:dsh-pet']);
@@ -535,7 +538,8 @@ test('installPack：DSHL 方言 → 依赖剔除 + tarball 直挂 node_modules +
     assert.equal(mounted.name, 'dsh-pet');
     assert.deepEqual(r.reconcile.missing, []);
     assert.deepEqual(r.vendored.mounted, ['dsh-pet']);
-    assert.ok(calls[0].args.includes('--prefer-offline'));
+    assert.ok(calls[0].args.includes('--trust-lockfile'));
+    assert.ok(!calls[0].args.includes('--prefer-offline'), 'r3 已删掉 --prefer-offline');
   } finally {
     await fsp.rm(home, { recursive: true, force: true });
   }
@@ -581,7 +585,8 @@ test('installPack：方言 + 显式 vendor:<包名> 并存 → 显式接管（fi
     assert.deepEqual(r.vendored.used, ['vendor:dsh-pet']);
     assert.deepEqual(r.vendored.mounted, []);
     assert.equal(await fsp.stat(path.join(target, 'node_modules', 'dsh-pet')).then(() => true, () => false), false);
-    assert.ok(calls[0].args.includes('--prefer-offline'));
+    assert.ok(calls[0].args.includes('--trust-lockfile'));
+    assert.ok(!calls[0].args.includes('--prefer-offline'), 'r3 已删掉 --prefer-offline');
   } finally {
     await fsp.rm(home, { recursive: true, force: true });
   }
@@ -723,16 +728,24 @@ test('installPack：闭包完整 → pnpm install --offline（严格离线）', 
     const r = await installPack(host, { source: packPath, profilesRoot, force: true });
 
     assert.equal(calls.length, 1);
-    assert.ok(calls[0].args.includes('--offline'), `应严格离线：${calls[0].args.join(' ')}`);
-    assert.ok(!calls[0].args.includes('--prefer-offline'));
-    assert.ok(!calls[0].args.includes('--frozen-lockfile'));
+    assert.ok(calls[0].args.includes('--offline'), `应加零网络断言：${calls[0].args.join(' ')}`);
+    assert.ok(calls[0].args.includes('--frozen-lockfile'), 'r3 §8.3：本地化后走 frozen');
+    assert.ok(calls[0].args.includes('--trust-lockfile'));
+    assert.ok(!calls[0].args.includes('--prefer-offline'), 'r3 已删掉 --prefer-offline');
     assert.equal(r.vendored.offline, true);
+    // 关键：**盘上的 lockfile 真的被本地化了**（支 A 四处同步 + integrity 覆盖），
+    // 否则 frozen 只是"碰巧"通过，接线可能悄悄没生效。
+    const lockOut = await fsp.readFile(path.join(r.dir, 'pnpm-lock.yaml'), 'utf8');
+    assert.ok(lockOut.includes('specifier: file:./vendor-blobs/dsh-pet/'), `importer specifier 应指向包内副本：${lockOut}`);
+    assert.ok(lockOut.includes('tarball: file:vendor-blobs/dsh-pet/'), 'resolution.tarball 应指向包内副本');
+    assert.ok(lockOut.includes("dsh-pet@file:vendor-blobs/dsh-pet/"), 'packages/snapshots 键应同步');
+    assert.ok(!lockOut.includes('sha512-AAA'), '（若夹具带占位 integrity，应已被现算 sha512 覆盖）');
   } finally {
     await fsp.rm(home, { recursive: true, force: true });
   }
 });
 
-test('installPack：闭包不完整（缺传递依赖）→ 保持 --prefer-offline', async () => {
+test('installPack：闭包不完整（缺传递依赖）→ 仍 frozen+trust，但不加 --offline', async () => {
   const home = await fsp.mkdtemp(path.join(os.tmpdir(), 'dspack-partial-'));
   const profilesRoot = path.join(home, 'profiles');
   try {
@@ -752,7 +765,9 @@ test('installPack：闭包不完整（缺传递依赖）→ 保持 --prefer-offl
     const host = fsHost({ async pnpm(args) { calls.push({ args }); return { status: 0 }; } });
     const r = await installPack(host, { source: packPath, profilesRoot, force: true });
 
-    assert.ok(calls[0].args.includes('--prefer-offline'));
+    assert.ok(calls[0].args.includes('--trust-lockfile'));
+    assert.ok(calls[0].args.includes('--frozen-lockfile'), '有 lockfile → r3 走 frozen');
+    assert.ok(!calls[0].args.includes('--prefer-offline'), 'r3 已删掉 --prefer-offline');
     assert.ok(!calls[0].args.includes('--offline'));
     assert.equal(r.vendored.offline, false);
   } finally {
@@ -798,31 +813,28 @@ test('blobRelPath：vendor-blobs 子目录取包名（npm 与 git 坐标一致�
 });
 
 /** 造一个带三类依赖的 profile 目录（npm 精确版本 / git sha / file:vendor-blobs round-trip）。 */
-async function makeProfileWithDeps(home, { withGit = true } = {}) {
+async function makeProfileWithDeps(home) {
   const dir = path.join(home, 'profiles', 'demo');
   // npm 依赖（已安装，node_modules 有原件）
   await fsp.mkdir(path.join(dir, 'node_modules', 'dsh-pet'), { recursive: true });
   await fsp.writeFile(path.join(dir, 'node_modules', 'dsh-pet', 'package.json'), JSON.stringify({ name: 'dsh-pet', version: '0.2.0', main: 'index.js' }));
   await fsp.writeFile(path.join(dir, 'node_modules', 'dsh-pet', 'index.js'), 'export const pet = 1;');
   // git 依赖（独立包，node_modules 有原件）
-  if (withGit) {
-    await fsp.mkdir(path.join(dir, 'node_modules', 'other-theme'), { recursive: true });
-    await fsp.writeFile(path.join(dir, 'node_modules', 'other-theme', 'package.json'), JSON.stringify({ name: 'other-theme', version: '1.0.0' }));
-  }
+  await fsp.mkdir(path.join(dir, 'node_modules', 'other-theme'), { recursive: true });
+  await fsp.writeFile(path.join(dir, 'node_modules', 'other-theme', 'package.json'), JSON.stringify({ name: 'other-theme', version: '1.0.0' }));
   // vendor-blobs round-trip（git 坐标来源，版本已带 -local 后缀）
   const blobDir = path.join(dir, 'vendor-blobs', 'github__DViridescent__dafy-whale-theme');
   await fsp.mkdir(blobDir, { recursive: true });
   const blobTgz = buildTarball({ 'package/package.json': '{"name":"dafy-whale-theme","version":"0.3.0-local.1"}' });
   await fsp.writeFile(path.join(blobDir, 'dafy-whale-theme-0.3.0-local.1.tgz'), blobTgz);
   // profile package.json（r3 §2：内嵌依赖的键 = 包名，与 tarball 内 name 一致）
-  const deps = {
-    'dsh-pet': '0.2.0',
-    'dafy-whale-theme': 'file:vendor-blobs/github__DViridescent__dafy-whale-theme/dafy-whale-theme-0.3.0-local.1.tgz',
-  };
-  if (withGit) deps['other-theme'] = 'github:Other/theme#abcdef123';
   await fsp.writeFile(path.join(dir, 'package.json'), JSON.stringify({
     name: 'dsh-profile-demo',
-    dependencies: deps,
+    dependencies: {
+      'dsh-pet': '0.2.0',
+      'other-theme': 'github:Other/theme#abcdef123',
+      'dafy-whale-theme': 'file:vendor-blobs/github__DViridescent__dafy-whale-theme/dafy-whale-theme-0.3.0-local.1.tgz',
+    },
     dsh: { profile: { bundles: [] } },
   }, null, 2));
   return { dir, blobTgz };

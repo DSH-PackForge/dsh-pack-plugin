@@ -98,6 +98,14 @@ export class Host {
     throw new Error('Host.sha256File 未实现');
   }
 
+  /**
+   * 对一段字节求 SHA-512，返回 **base64**（pnpm lockfile 的 `integrity: sha512-<base64>` 的
+   * payload 部分）。本地化 vendored 依赖时要用现算值覆盖 lockfile 的 integrity（v3 §8.3、§11.1.4）。
+   */
+  async sha512(_data) {
+    throw new Error('Host.sha512 未实现');
+  }
+
   /** 执行外部命令，返回 { status, error? }（Node: spawnSync 继承 stdio；插件/浏览器宿主另议）。 */
   async exec(_cmd, _args, _opts) {
     throw new Error('Host.exec 未实现');

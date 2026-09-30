@@ -3,6 +3,7 @@ import { validateManifest, coordsToPkgDeps, sanitizeSlug, parseGitCoord, normali
 import { listInstalledDshVersions, sortVersionsDesc } from './discovery.js';
 import { storeHomeRel } from './home-store.js';
 import { resolveVendoredPlan, isDialectSpec, directMount, materializeVendorBlobs, blobRelPath, computeOfflineCoverage, allDependencyCoords, vendorKeyToName, VENDOR_KEY_PREFIX } from './vendored.js';
+import { localizeDirectNpm, localizeDirectGit, localizeClosureNode, findPackageNodes } from './lockfile.js';
 
 /**
  * 一键安装：读取本地/URL 的 .dspack → 校验头 & manifest → 按 type 分支安装。
@@ -76,27 +77,20 @@ export async function installPack(host, opts = {}) {
     }
     if (launchersResult.warnings.length) log('launchers 警告已放行（用户已确认继续，安装不受影响）');
 
-    // 阶段 0（v5 r2）：vendored 归一 + 对账 + 逐 tarball sha256/size 预验——装前发现优于装到一半。
+    // 阶段 0（v5 r3）：vendored 归一 + 对账 + 逐 tarball sha256/size 预验——装前发现优于装到一半。
     // r1 包（无 vendor/）立即返回 active:false，行为与修订前完全一致。
     const vendoredPlan = await resolveVendoredPlan(host, manifest, entries, log);
-    // 闭包完整性（v3 §8.3）：vendored 覆盖 lockfile 全部依赖 → 严格 --offline（零网络、缺件即报错）；
-    // 局部覆盖 / 无法判定 → --prefer-offline（本地优先，未覆盖的走 registry 兜底）。
+    // 闭包完整性（v3 §8.3）：「离线可装」是派生属性——lockfile 里的依赖都被包内副本覆盖（版本级命中）
+    // 才加 `--offline` 作零网络断言。r3 起闭包条目也会被本地化（改 resolution.tarball），
+    // 所以不再有「store 预填充」这回事。
     if (vendoredPlan.active && entries['pnpm-lock.yaml']) {
       const coverage = computeOfflineCoverage(decodeText(entries['pnpm-lock.yaml']), vendoredPlan);
-      if (coverage) {
-        // 闭包条目（key ∉ 直接依赖，如 full 档收集的传递依赖）tarball 已校验，但尚未经
-        // store 预填充喂给 pnpm——硬切 --offline 会在闭包元数据解析时失败，保守用 --prefer-offline。
-        const depCoords = allDependencyCoords(manifest);
-        const closureCount = [...vendoredPlan.byCoord.keys()].filter((c) => !depCoords.has(c)).length;
-        if (coverage.complete && closureCount > 0) {
-          log(`vendored 闭包完整（lockfile ${coverage.total} 个包全部内嵌，其中传递闭包 ${closureCount} 个）→ store 预填充待实现，保守本地优先：--prefer-offline`);
-        } else if (coverage.complete) {
-          vendoredPlan.offline = true;
-          log(`vendored 闭包完整（lockfile ${coverage.total} 个包全部内嵌）→ 离线模式：pnpm install --offline`);
-        } else {
-          const head = coverage.missing.slice(0, 5).join(', ');
-          log(`vendored 局部覆盖：lockfile ${coverage.total} 个包中 ${coverage.missing.length} 个未内嵌（${head}${coverage.missing.length > 5 ? '…' : ''}）→ 本地优先：--prefer-offline`);
-        }
+      if (coverage?.complete) {
+        vendoredPlan.offline = true;
+        log(`vendored 闭包完整（lockfile ${coverage.total} 个包全部被包内副本覆盖）→ 加 --offline 作零网络断言`);
+      } else if (coverage) {
+        const head = coverage.missing.slice(0, 5).join(', ');
+        log(`vendored 局部覆盖：lockfile ${coverage.total} 个包中 ${coverage.missing.length} 个未内嵌（${head}${coverage.missing.length > 5 ? '…' : ''}）→ 未覆盖的仍按坐标从网络取`);
       }
     }
     if (manifest.manifestVersion === 5 && manifest.type === 'dshhome') {
@@ -152,7 +146,7 @@ async function installProfile(host, manifest, entries, opts, progress, profilesR
     if (!opts.noInstall) {
       installed = true;
       progress('install', '运行 pnpm install（依赖重建，可能较慢）');
-      await pnpmInstall(host, target, opts, !!entries['pnpm-lock.yaml'], vendorMode(vendoredPlan));
+      await pnpmInstall(host, target, opts, !!entries['pnpm-lock.yaml'], vendorArgs(vendoredPlan, !!entries['pnpm-lock.yaml']));
       // DSHL 方言依赖：pnpm 之后直挂进 node_modules（须在层栈对账之前）
       mounted.push(...await mountDialectDeps(host, target, manifest.dependencies ?? {}, vendoredPlan, log));
       reconcile = await reconcileProfile(host, target, manifest);
@@ -223,7 +217,7 @@ async function installDshHome(host, manifest, entries, opts, progress, vendoredP
 
       if (!opts.noInstall) {
         progress('install', `运行 pnpm install（${name}，可能较慢）`);
-        await pnpmInstall(host, profileDir, opts, !!entries['pnpm-lock.yaml'], vendorMode(vendoredPlan));
+        await pnpmInstall(host, profileDir, opts, !!entries['pnpm-lock.yaml'], vendorArgs(vendoredPlan, !!entries['pnpm-lock.yaml']));
         mountedAll.push(...await mountDialectDeps(host, profileDir, unit.dependencies ?? {}, vendoredPlan, log));
         const reconcile = await reconcileProfile(host, profileDir, unit);
         if (reconcile.missing.length > 0) {
@@ -450,8 +444,10 @@ export async function verifyIntegrity(host, packPath, opts = {}) {
 
 /** 单 profile：overrides/* 落盘 + 重建 package.json + 快照机器文件 + vendored tarball 落盘（r2）。 */
 async function materializePackage(host, dir, manifest, entries, log, plan) {
-  // 0) vendored tarball → vendor-blobs/（file: 引用的实体；manifest 不动，改写只发生在重建的 package.json）
-  if (plan?.active) await materializeVendorBlobs(host, dir, plan, Object.keys(manifest.dependencies ?? {}), log);
+  // 0) vendored tarball → vendor-blobs/（file: 引用的实体；manifest 不动，改写只发生在重建的 package.json）。
+  //    取**全部**计划条目：闭包条目不在 dependencies 里，也必须落盘——本地化时改的
+  //    resolution.tarball 指的就是这里的实体。
+  if (plan?.active) await materializeVendorBlobs(host, dir, plan, [...plan.byCoord.keys()], log);
 
   // 1) overrides/* → profile 根
   for (const [entryPath, data] of Object.entries(entries)) {
@@ -482,6 +478,10 @@ async function materializePackage(host, dir, manifest, entries, log, plan) {
     }
   }
 
+  // 3.5) lockfile 本地化（v3 §8.3 两支 + 闭包条目）——必须在 pnpm install 之前，
+  //      且改的是**落盘副本**，包内字节一个字不动（§8.6 第 6 条）。
+  await localizeTargetLockfile(host, dir, plan, log);
+
   // 4) cordis.patch.yml：overrides 已优先落地；缺则回退 manifest.patch
   const patchPath = host.joinPath(dir, 'cordis.patch.yml');
   if ((await host.stat(patchPath)) == null && typeof manifest.patch === 'string') {
@@ -508,7 +508,7 @@ async function materializeProfile(host, profileDir, name, unit, entries, log, pl
   log(`创建 profile 目录：${profileDir}`);
 
   // 0) vendored tarball → vendor-blobs/（vendor/ 是包级的，各 profile 各放一份 file: 引用实体）
-  if (plan?.active) await materializeVendorBlobs(host, profileDir, plan, Object.keys(unit.dependencies ?? {}), log);
+  if (plan?.active) await materializeVendorBlobs(host, profileDir, plan, [...plan.byCoord.keys()], log);
 
   // 1) overrides/profiles/<name>/* → profile 根
   const prefix = `overrides/profiles/${name}/`;
@@ -539,6 +539,9 @@ async function materializeProfile(host, profileDir, name, unit, entries, log, pl
     await host.writeTextFile(patchPath, unit.patch);
     log(`回退 unit.patch → ${patchPath}`);
   }
+
+  // 4) lockfile 本地化：dshhome 的每个 profile 各自一份 lockfile（各跑一次 pnpm install）
+  await localizeTargetLockfile(host, profileDir, plan, log);
 }
 
 /** dshhome：home 级 overrides（.agent-presets/ skills/ AGENTS.md data/ 等，profiles/ 除外）落盘。 */
@@ -578,31 +581,120 @@ function applyVendoredSpecs(pkgDeps, manifestDeps, plan) {
   }
 }
 
-/** vendored 安装模式：false=纯网络（r1）| 'prefer'=本地优先 | 'offline'=严格离线（闭包完整）。 */
-function vendorMode(plan) {
-  if (!plan?.active) return false;
-  return plan.offline ? 'offline' : 'prefer';
+/**
+ * 把落盘副本 `pnpm-lock.yaml` 按 v3 r3 §8.3 本地化（支 A / 支 B / 闭包条目）。
+ *
+ * 为什么必须在安装前做、且只改副本：
+ *   - pnpm 拒绝把 `file:` 只写在 package.json（`ERR_PNPM_OUTDATED_LOCKFILE`），四处/取件地址
+ *     必须同步；r3 的结论是「改取件地址，而不是填 store 缓存」（`ERR_PNPM_NO_OFFLINE_TARBALL`）。
+ *   - 包内快照必须保持来源风格（§8.1），否则不识 `vendor/` 的老启动器会因为路径缺失全盘失败。
+ *
+ * 组装规则（实测 pnpm 11.7.0）：
+ *   - 直接依赖：npm 节点走支 A（importer specifier/version、packages 键、resolution、snapshots 键
+ *     四处同步，并在节点里补 version 字段）；git 节点走支 B（只改 `resolution.tarball`）。
+ *   - 闭包条目：只改该节点的 `resolution.tarball`（闭包没有 importer 段可改）。
+ *   - 定位只能靠**包名**：git 节点的键版本段是 codeload URL，不是版本。
+ */
+async function localizeTargetLockfile(host, targetDir, plan, log) {
+  if (!plan?.active) return { localized: false, changes: [] };
+  const lockPath = host.joinPath(targetDir, 'pnpm-lock.yaml');
+  const original = await host.readTextFile(lockPath);
+  const localizable = [...plan.byCoord.values()].filter((e) => !e.dialect);
+  if (!original) {
+    // 方言条目不需要 lockfile（它们走直挂 + 从依赖里剔除）。但**非方言**条目的本地化必须靠
+    // lockfile 认节点（git 节点的键版本段是 codeload URL，没法凭键猜），缺它就退回 file: spec
+    // 直接安装——规范要求带 vendor/ 的包必须带 lockfile，这里是宽进并留痕。
+    if (localizable.length) {
+      log('警告：包内带 vendor/ 但缺 pnpm-lock.yaml → 无法按 v3 §8.3 本地化（改取件地址），退化为 file: spec 直接安装');
+    }
+    return { localized: false, changes: [] };
+  }
+  let text = original;
+  const changes = [];
+  for (const [key, e] of plan.byCoord) {
+    if (e.dialect) continue; // 方言走直挂（v3 §8.5），不进 lockfile
+    const blobRel = blobRelPath(key, e);
+    if (e.kind === 'closure') {
+      const nodes = findPackageNodes(text, e.pkgName);
+      const node = nodes.find((n) => n.version === e.version) ?? (nodes.length === 1 ? nodes[0] : null);
+      if (!node) throw new Error(`闭包条目「${key}」在 lockfile 里找不到对应节点（无法本地化）`);
+      const r = localizeClosureNode(text, { key: node.key, blobRel });
+      text = r.text;
+      changes.push(...r.changes);
+      continue;
+    }
+    const nodes = findPackageNodes(text, e.pkgName);
+    if (nodes.some((n) => n.gitHosted)) {
+      // 支 B：git 来源（codeload 归档非 npm 布局，改 file: 装不了）
+      const r = localizeDirectGit(text, { name: e.pkgName, blobRel });
+      text = r.text;
+      changes.push(...r.changes);
+    } else {
+      // 支 A：npm 来源。integrity 用**现算 sha512** 覆盖（包里可能是本地重打包后的值）
+      const integrity = `sha512-${await host.sha512(e.bytes)}`;
+      const r = localizeDirectNpm(text, { name: e.pkgName, version: e.version, blobRel, integrity });
+      text = r.text;
+      changes.push(...r.changes);
+    }
+  }
+  await host.writeTextFile(lockPath, text);
+  const head = changes.slice(0, 4).join(' / ');
+  log(`lockfile 本地化：${changes.length} 处（${head}${changes.length > 4 ? ' …' : ''}）`);
+  return { localized: true, changes };
 }
 
-async function pnpmInstall(host, target, opts, frozen, mode) {
+/**
+ * vendored 安装参数（v3 r3 §8.3 执行段）：本地化之后 lockfile 与 package.json 已一致，按规范走
+ * `pnpm install --frozen-lockfile --trust-lockfile`；全部依赖都被包内副本覆盖（coverage complete）
+ * 时再加 `--offline` 作零网络断言。**不用 `--prefer-offline`**——它表达「本地优先、否则联网」，
+ * 与「来源由键唯一确定」矛盾（r2 的做法已被规范否决）。
+ * @returns {string[]|null} null = 无 vendored 内容（走原有纯网络路径）
+ */
+function vendorArgs(plan, hasLockfile) {
+  if (!plan?.active) return null;
+  const args = [];
+  // 本地化只在有 lockfile 时发生（§8.3 改的是 lockfile 里的取件地址）；无 lockfile 就没法 frozen。
+  if (hasLockfile) args.push('--frozen-lockfile');
+  // `--trust-lockfile`：pnpm 11 的供应链复检（发布冷静期）豁免，等价于包内写 minimumReleaseAge: 0
+  // ——规范 §8.6.8 给的正是这两个二选一。
+  args.push('--trust-lockfile');
+  if (plan.offline) args.push('--offline');
+  return args;
+}
+
+async function pnpmInstall(host, target, opts, frozen, vArgs = null) {
   // 依赖重建可能较慢（尤其 git 依赖走 git clone），给足超时但绝不无限卡死。
   const timeoutMs = opts.timeoutMs > 0 ? opts.timeoutMs : 10 * 60 * 1000;
   // 优先走 host.pnpm（桌面端复用 DSH 自带 node+pnpm，不依赖用户 PATH 上的 node/pnpm）；无此能力则回退 PATH 上的 pnpm。
   const runPnpm = typeof host.pnpm === 'function'
     ? (args, o) => host.pnpm(args, o)
     : (args, o) => host.exec('pnpm', args, o);
-  const args = ['install'];
-  // vendored 激活（r2 统一算法）：--prefer-offline 本地优先（未覆盖的走 registry 兜底）；
-  // 闭包完整时升级为严格 --offline（零网络、缺件即报错）。file: spec 与随包 lockfile 必然
-  // 不匹配，两种模式都跳过 --frozen-lockfile（否则每次都白跑一遍 frozen 再回退）。
-  if (mode === 'offline') args.push('--offline');
-  else if (mode === 'prefer') args.push('--prefer-offline');
-  if (frozen && !mode) args.push('--frozen-lockfile');
-  if (opts.registry) args.push('--registry', opts.registry);
+  const warn = typeof opts.onOutput === 'function' ? opts.onOutput : () => {};
+  const base = ['install', ...(opts.registry ? ['--registry', opts.registry] : [])];
+
+  if (vArgs) {
+    // 本地化后的 vendored 安装：规范要求 frozen（可复现）。失败时退一步让 pnpm 重写 lockfile
+    // ——典型成因是包内 lockfile 的 settings 与本机 pnpm 配置不一致
+    // （专测：ERR_PNPM_LOCKFILE_CONFIG_MISMATCH，pnpm 11）——并把偏差记进日志。
+    let r = await runPnpm([...base, ...vArgs], { cwd: target, timeoutMs, onOutput: opts.onOutput });
+    if (r.status !== 0) {
+      warn('vendored 安装未通过 --frozen-lockfile 校验 → 退一步用 --no-frozen-lockfile 重试（偏差留痕）');
+      r = await runPnpm(
+        [...base, '--no-frozen-lockfile', '--trust-lockfile', ...(vArgs.includes('--offline') ? ['--offline'] : [])],
+        { cwd: target, timeoutMs, onOutput: opts.onOutput },
+      );
+    }
+    if (r.error) throw new Error(`pnpm install 执行失败：${r.error}`);
+    if (r.status !== 0) throw new Error(`pnpm install 失败（退出码 ${r.status ?? '未知'}）`);
+    return;
+  }
+
+  const args = [...base];
+  if (frozen) args.push('--frozen-lockfile');
   let r = await runPnpm(args, { cwd: target, timeoutMs, onOutput: opts.onOutput });
   // frozen-lockfile 失配时回退普通安装（v4/v5 导入语义）
-  if (frozen && !mode && r.status !== 0) {
-    r = await runPnpm(['install', ...(opts.registry ? ['--registry', opts.registry] : [])], { cwd: target, timeoutMs, onOutput: opts.onOutput });
+  if (frozen && r.status !== 0) {
+    r = await runPnpm(base, { cwd: target, timeoutMs, onOutput: opts.onOutput });
   }
   if (r.error) throw new Error(`pnpm install 执行失败：${r.error}`);
   if (r.status !== 0) throw new Error(`pnpm install 失败（退出码 ${r.status ?? '未知'}）`);

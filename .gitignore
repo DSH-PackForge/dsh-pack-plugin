@@ -4,3 +4,6 @@ node_modules/
 .DS_Store
 package-lock.json
 *.tgz
+# 本工具自己产出的整合包（导出物，不进仓库）
+*.dspack
+*.dspack.sha256

@@ -45,13 +45,15 @@ async function applyVendorSelection(host, manifest, lookupDirs, opts, progress, 
   if (!Object.keys(selection).length && opts.vendor !== 'full') return null;
   if (probed.length) log(`自动补选内嵌：${probed.join(', ')}`);
   progress('vendor', `内嵌 ${Object.keys(selection).length} 个 vendored 依赖（档位 ${opts.vendor ?? 'auto'}）`);
-  const vr = await collectVendoredForExport(host, lookupDirs, manifest.dependencies ?? {}, selection, {
+  const vr = await collectVendoredForExport(host, lookupDirs, manifest.type === 'dshhome' ? {} : (manifest.dependencies ?? {}), selection, {
     registry: opts.registry,
     log,
     closure: opts.vendor === 'full',
     lockText,
   });
-  manifest.dependencies = vr.dependencies;
+  // dshhome 形态没有顶层 dependencies（依赖在各 profile 的 ProfileUnit 里），故只写 vendored；
+  // 各 profile 的键回写由 packHome 用 vr.keysByCoord 完成。
+  if (manifest.type !== 'dshhome') manifest.dependencies = vr.dependencies;
   manifest.vendored = vr.vendored;
   for (const note of vr.notes) log(`注意：${note}`);
   progress('vendor', `vendored 完成：${Object.keys(vr.vendored).length} 个 tarball 已内嵌`);
@@ -230,15 +232,20 @@ export async function packHome(host, home, opts = {}) {
   const vendorResult = await applyVendorSelection(host, manifest, lookupDirs, opts, progress, lockText);
   if (vendorResult) {
     Object.assign(entries, vendorResult.entries);
+    // 逐 profile 回写键（v5 r3 §2）：被内嵌的直接依赖在 ProfileUnit 里也要写成 `vendor:<包名>`，
+    // 值取内嵌时定下的精确版本（与 vendored[].version、tarball 内 version 三处一致）。
+    const keysByCoord = vendorResult.keysByCoord ?? {};
+    const vendored = manifest.vendored ?? {};
     for (const [name, unit] of Object.entries(manifest.profiles)) {
       const dir = host.joinPath(home.dir, 'profiles', name);
       const localList = await listProfileDependencies(host, [dir]);
       const deps = { ...(unit.dependencies ?? {}) };
       for (const item of localList) {
-        if (!Object.hasOwn(manifest.vendored ?? {}, item.coord)) continue;
+        const key = keysByCoord[item.coord];
+        if (!key || !Object.hasOwn(vendored, key)) continue;
         delete deps[item.pkgName];
         delete deps[item.coord];
-        deps[item.coord] = manifest.dependencies[item.coord];
+        deps[key] = vendored[key].version;
       }
       unit.dependencies = deps;
     }

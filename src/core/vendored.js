@@ -676,7 +676,8 @@ export async function expandVendorSelection(host, lookupDirs, manualSel, knob, o
  *   收齐传递闭包（未覆盖条目逐个取件：registry 原件优先 → .pnpm 重打包回退 → skip + note）。
  * @returns {Promise<{vendored, dependencies, entries, notes}>}
  *   entries 为归档内 `vendor/...` 条目；dependencies 为改写后的 manifest dependencies（三处一致）。
- *   闭包条目 vendored key = npm 包名（不在 dependencies 中，由 §12 约束 1 的闭包规则放行）。
+ *   闭包条目 vendored key = `name@version` + kind/name（不在 dependencies 中，由 §12 约束 1 放行）。
+ *   直接依赖的 key 取**包内 package.json 的 name**（别名依赖也按真实名），值 = 精确版本。
  */
 export async function collectVendoredForExport(host, lookupDirs, baseDependencies, selection, opts = {}) {
   const log = typeof opts.log === 'function' ? opts.log : () => {};
@@ -694,6 +695,8 @@ export async function collectVendoredForExport(host, lookupDirs, baseDependencie
   }
 
   for (const [coord, reason] of Object.entries(sel)) {
+    // reason 是可选字段（§12）：调用方不给就不写。给了就必须是枚举内的值（否则是笔误）。
+    if (reason === undefined || reason === null) continue;
     if (!VENDORED_REASONS.has(reason)) {
       throw new Error(`vendored reason「${reason}」非法（仅支持 ${[...VENDORED_REASONS].join(' / ')}）`);
     }
@@ -705,6 +708,10 @@ export async function collectVendoredForExport(host, lookupDirs, baseDependencie
   const vendored = {};
   const entries = {};
   const dependencies = { ...baseDependencies };
+  /** 坐标 → 最终 vendored 键（packHome 回写各 profile 的 ProfileUnit 时要用）。 */
+  const keysByCoord = {};
+  /** 键 → 归属（检测「同一包名被内嵌两次」：vendored 直接依赖的键不带版本，表达不了两个来源）。 */
+  const keyOwners = new Map();
   // 覆盖集合（full 档闭包收集用）：坐标折算名 + tarball 真实包名（git 坐标的 lockfile 名是包名）
   const covered = new Set();
   const cover = (coord, bytes) => {
@@ -766,8 +773,22 @@ export async function collectVendoredForExport(host, lookupDirs, baseDependencie
 
     // dependencies 改写（v5 r3 §2）：vendored 直接依赖的键改取 **tarball 内包名 + `vendor:` 前缀**
     // —— 来源由键唯一确定（只从包内），老启动器遇此前缀会响亮失败（预期行为，见 v3 §8.5 兼容矩阵）。
+    // 包名以包内 package.json 为准（权威）：别名依赖（依赖键 ≠ 真实包名）若按依赖键写，
+    // 安装端阶段 0 的「tarball 内包名必须等于键」核对会拒装。
     // 同时删掉可能并存的裸键（npm 包名 / git 坐标 / 旧 file: 形态）：§2 规定同一包名不得两类并存。
-    const vendorKey = `${VENDOR_KEY_PREFIX}${item.pkgName}`;
+    const realName = tarballPackageJson(bytes)?.name;
+    const keyName = typeof realName === 'string' && realName ? realName : item.pkgName;
+    if (keyName !== item.pkgName) {
+      notes.push(`${coord}：内嵌键取包内真实名「${keyName}」（依赖键为「${item.pkgName}」）——请确认 bundles 用的是同一个名字`);
+    }
+    const vendorKey = `${VENDOR_KEY_PREFIX}${keyName}`;
+    const owner = keyOwners.get(vendorKey);
+    if (owner && (owner.coord !== coord || owner.version !== version)) {
+      // 键只带包名（r3 §2），装不下「同一包名的两个来源/两个版本」——与其静默取先到的，不如拒绝导出。
+      throw new Error(`同一包名「${keyName}」被内嵌了两次：${owner.coord}@${owner.version} 与 ${coord}@${version}。vendored 直接依赖的键只带包名，无法表达两个来源/版本 → 请统一版本、或把它们拆成不同名字的包（规范未定义此情形）`);
+    }
+    keyOwners.set(vendorKey, { coord, version });
+    keysByCoord[coord] = vendorKey;
     delete dependencies[item.pkgName];
     delete dependencies[coord];
     dependencies[vendorKey] = version;
@@ -835,5 +856,5 @@ export async function collectVendoredForExport(host, lookupDirs, baseDependencie
       covered.add(name);
     }
   }
-  return { vendored, dependencies, entries, notes };
+  return { vendored, dependencies, entries, notes, keysByCoord };
 }
