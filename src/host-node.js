@@ -134,6 +134,11 @@ export class NodeHost {
     return crypto.createHash('sha256').update(data).digest('hex');
   }
 
+  /** SHA-512 的 base64（pnpm lockfile 的 `integrity: sha512-<base64>` payload）。 */
+  async sha512(data) {
+    return crypto.createHash('sha512').update(data).digest('base64');
+  }
+
   async sha256File(abs) {
     try {
       return await new Promise((resolve, reject) => {

@@ -70,24 +70,27 @@ export function packDirId(entry) {
   return '';
 }
 
-/** v5 兼容性字段透传（manifest v5 §13/§14）：launchers / dshVersions
+/** v5 兼容性字段透传（manifest v5 §13/§14）：launchers / dshVersions / vendored
  *  从索引 entry 或懒加载详情 manifest 里「有什么带什么」。中心索引（index 契约 §6.5）不平铺
- *  这两个字段（只带派生标记 launcherRestricted），完整内容在 packs/<id>/manifest.json——
- *  透传只为宽容消费：条目/manifest 里带了就带出，缺失不设键。 */
+ *  这些字段（只带派生标记 launcherRestricted），完整内容在 packs/<id>/manifest.json——
+ *  透传只为宽容消费：条目/manifest 里带了就带出，缺失不设键。
+ *  注：`vendored`（内嵌依赖）是**消费侧**信息——主线不再产内嵌包，但要能显示别人的。 */
 export function pickR2Fields(src) {
   const out = {};
   if (!src || typeof src !== 'object') return out;
   if (src.launchers && typeof src.launchers === 'object' && !Array.isArray(src.launchers)) out.launchers = src.launchers;
-  if (Array.isArray(src.dshVersions)) {
+  if (src.dshVersions && Array.isArray(src.dshVersions)) {
     const versions = src.dshVersions.filter((v) => typeof v === 'string' && v.trim());
     if (versions.length) out.dshVersions = versions;
   }
+  if (src.vendored && typeof src.vendored === 'object' && !Array.isArray(src.vendored)) out.vendored = src.vendored;
   return out;
 }
 
-/** r2 字段 → 市场详情展示徽标（结构化条目，文案由 UI 层按 kind 做 i18n）：
+/** 字段 → 市场详情展示徽标（结构化条目，文案由 UI 层按 kind 做 i18n）：
  *  - { kind: 'launcher-require', id, minVersion }   需启动器 <id> ≥ <ver>（简式/全式都归一）
  *  - { kind: 'launcher-conflict', id, reason }      声明不支持某启动器（reason 可为空串）
+ *  - { kind: 'vendored', count }                    内嵌 N 个依赖（消费侧展示）
  *  - { kind: 'dsh-versions', versions }             兼容 DSH 版本枚举集
  *  纯支持（supported:true 无 minVersion）不产生徽标；无任何字段 → 空列表（通用包）。 */
 export function r2Badges(src) {
@@ -97,6 +100,8 @@ export function r2Badges(src) {
     if (e.supported === false) out.push({ kind: 'launcher-conflict', id, reason: e.reason ?? '' });
     else if (e.minVersion) out.push({ kind: 'launcher-require', id, minVersion: e.minVersion });
   }
+  const count = r2.vendored ? Object.keys(r2.vendored).length : 0;
+  if (count) out.push({ kind: 'vendored', count });
   if (r2.dshVersions?.length) out.push({ kind: 'dsh-versions', versions: r2.dshVersions });
   return out;
 }

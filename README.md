@@ -45,8 +45,12 @@ src/core/（整合包引擎）                       src/locale（可选）
 - **`.dspack` 容器**（pack-structure v3）：标准 ZIP；根放 `dspack.json`（`{"format":"dspack","version":3}` 标记）+ `manifest.json`。
   - **profile 形态**：机器文件（`package.json` / `pnpm-workspace.yaml` / `pnpm-lock.yaml`）放根，其余内容放 `overrides/`，home 级内容放 `home/`。
   - **dshhome 形态**：整机快照（`profiles/`、`presets/`、`skills/`、`instructions/`、`defaultProfile` 等）。
+  - **依赖内嵌 / 离线包：主线只消费、不生产**（下方「导入侧」）。
   - **导出侧兼容性编辑（v5 §13/§14）**：导出面板「兼容性」组编辑 `dshVersions`（实测兼容版本枚举集，datalist 建议来自本机已装版本，首个即首选、未填 `dshVersion` 时作首选）与 `launchers`（四个已认领启动器 ID 的支持/冲突 + `minVersion`/`reason`，简式/全式归一）；两者持久化进 `.dshpkcfg`（白名单已扩展）并在打包前强校验（`dshVersion ∈ dshVersions` 等错误在导出时报出）。
-- **manifest v5**：`type: "profile" | "dshhome"`（见 `src/core/manifest.js`）。字段：`dshVersions`（§13，交集决策已实现：`dshVersion` 优先 → 集合内最新）、`launchers`（§14，结构校验已实现；安装端判定表已接线）。前向兼容：未知字段不拒装（**依赖内嵌 / 离线包（`vendor:` 键、`vendored{}`、`vendor/` 目录）已随规范主干移出基线**，本工具不再读写该族字段）。
+- **manifest v5**：`type: "profile" | "dshhome"`（见 `src/core/manifest.js`）。字段：`dshVersions`（§13，交集决策已实现：`dshVersion` 优先 → 集合内最新）、`launchers`（§14，结构校验已实现；安装端判定表已接线）。前向兼容：未知字段不拒装。
+- **依赖内嵌（`vendor:` 键 / `vendored{}` / `vendor/`）**
+  - **导入侧（主线保留）**：阶段 0 对账 + 逐 tarball `sha256`/`size` 预验（装前拒装）、tarball 落盘 `vendor-blobs/`、`pnpm install` 前把**落盘副本** `pnpm-lock.yaml` 按节点形态本地化（npm 支四处同步 `file:` / git 支只改 `resolution.tarball` / 闭包条目只改 `resolution.tarball`，见 `src/core/lockfile.js`），随后 `--frozen-lockfile --trust-lockfile`（覆盖完整时再加 `--offline`）；DSHL `vendor:` 方言包按隐式条目消费（直挂 `node_modules/`，依赖剔除）。市场详情页仍显示「内嵌 N 个依赖」徽标。
+  - **导出侧（主线已移除，在 `feat/vendoring` 分支）**：产包路径（`vendor` 档位 / 依赖清单勾选 / 闭包收集 / codeload 原件 / 上游探测 / 离线可装性自检）已从主线删除——规范主干 `36e0405` 把 vendoring 移出基线，且这条产包路径此前出过 bug（见 `release_log/v0.3.5.md`）。需要产出内嵌包时切到 `feat/vendoring` 分支。
 - **安全规则**（`src/core/security.js`）：`node_modules/`、`dist/`、密钥 / 凭据、嵌套压缩包、`.dshpkcfg`、`.dsh-pack` 等一律不进包。
 - **工作区配置**（specs/workspace-config/v1，`src/core/workspace.js`）：`.dshpkcfg` 为单个 UTF-8 JSON 对象，2 空格缩进 + 结尾换行；只认白名单字段（`name` / `version` / `displayName` / `description` / `author` / `icon` / `dshVersion` / `out` / `exportContent` / `profileName` / `mode` / `content` / `defaultProfile`）；空字符串表示「未填写」。
 - **市场索引**（specs/index/index.md，schemaVersion 2，`src/core/market.js`）：`index.json` 只放 `downloadUrl` + `sha256` + `size` 指针和元数据，完整 manifest / README 从 `packs/<owner>.<repo>/` 懒加载。

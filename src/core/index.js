@@ -38,5 +38,17 @@ export { exportRepo, ReleaseConflictError, renderReadme, renderDspackIgnore, ren
 export { loadWorkspaceConfig, saveWorkspaceConfig, WORKSPACE_KEYS, exportFromWorkspace, exportHomeFromWorkspace } from './workspace.js';
 export { inspectProfile, inspectHome, inspectPack } from './inspect.js';
 export { installPack, verifyIntegrity, reconcileProfile, resolvePackSource, resolveDshVersion, judgeLaunchers } from './install.js';
+// 依赖内嵌：主线只保留**消费侧**（导入侧）API；产出侧（导出/内嵌）在 feat/vendoring 分支。
+export {
+  resolveVendoredPlan,
+  isDialectSpec,
+  directMount,
+  materializeVendorBlobs,
+  blobRelPath,
+  coordDirName,
+  allDependencyCoords,
+  lockfilePackageNames,
+  computeOfflineCoverage,
+} from './vendored.js';
 export { untar, buildTarball } from './tar.js';
 export { readMarketIndex, fetchMarketPackDetail, normalizeMarketPack, packDirId, DEFAULT_MARKET_INDEX, pickR2Fields, r2Badges, parseLaunchersRegistry, fetchLaunchersRegistry, DEFAULT_LAUNCHERS_REGISTRY_URL, BUILTIN_LAUNCHERS } from './market.js';

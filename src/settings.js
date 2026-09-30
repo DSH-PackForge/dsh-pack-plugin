@@ -119,8 +119,9 @@ const dict = {
     'market.r2.launcherConflict': '不支持在 {id} 上运行：{reason}',
     'market.r2.noReason': '未提供原因',
     'market.r2.dshVersions': '兼容 DSH 版本：{versions}',
-    // 基线已取消离线包：徽标兜底文案不再提「内嵌依赖」（该徽标随基线一并移除）。
-    'market.r2.none': '无启动器兼容限制',
+    // 展示侧保留：主线不再产内嵌包，但仍要能装、并在详情页看出这是带内嵌依赖的包。
+    'market.r2.vendored': '内嵌 {count} 个依赖',
+    'market.r2.none': '无启动器兼容限制，未内嵌依赖',
     'installConfirm.title': '安装确认',
     'installConfirm.hint': '该整合包的启动器兼容声明存在警告，确认后将照常安装：',
     'installConfirm.ok': '仍要安装',
@@ -237,8 +238,8 @@ const dict = {
     'market.r2.launcherConflict': 'Not supported on {id}: {reason}',
     'market.r2.noReason': 'no reason given',
     'market.r2.dshVersions': 'Compatible DSH versions: {versions}',
-    // 基线已取消离线包：徽标兜底文案不再提内嵌依赖。
-    'market.r2.none': 'No launcher restrictions',
+    'market.r2.vendored': '{count} vendored deps',
+    'market.r2.none': 'No launcher restrictions, no vendored deps',
     'installConfirm.title': 'Install confirmation',
     'installConfirm.hint': 'This pack has launcher-compatibility warnings. It will still be installed after you confirm:',
     'installConfirm.ok': 'Install anyway',
@@ -640,6 +641,8 @@ export function DspackSection({ t, packforge }) {
     if (b.kind === 'launcher-require') return t('market.r2.launcherRequire').replace('{id}', b.id).replace('{ver}', b.minVersion);
     if (b.kind === 'launcher-conflict') return t('market.r2.launcherConflict').replace('{id}', b.id).replace('{reason}', b.reason || t('market.r2.noReason'));
     if (b.kind === 'dsh-versions') return t('market.r2.dshVersions').replace('{versions}', b.versions.join(', '));
+    // 展示侧：带内嵌依赖的包（多由 feat/vendoring 分支产出）在这里标出数量
+    if (b.kind === 'vendored') return t('market.r2.vendored').replace('{count}', String(b.count));
     return '';
   };
 

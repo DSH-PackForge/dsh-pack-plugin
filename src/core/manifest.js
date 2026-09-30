@@ -1,7 +1,11 @@
-// manifest v5 契约（基线，见 DSH-PackForge/specs/manifest/v5.md）。
+// manifest v5 契约（见 DSH-PackForge/specs/manifest/v5.md）。
 // v5 = v4 全部硬约束（依赖坐标钉死精确版本/commit sha、dshVersion 精确、多语言元数据、files[]）
 //      + type 区分形态："profile"（单包）/ "dshhome"（整机，含 profiles/presets/skills/instructions）
-//      + dshVersions（兼容 DSH 版本枚举集）/ launchers（启动器兼容声明）。
+//      + dshVersions（§13）/ launchers（§14）。
+//
+// 注意：与 vendored.js 互相 import（validateVendored 需要 lockfilePackageEntries 做闭包条目
+// 对账放行）。循环依赖是安全的：双方都只在**运行时函数调用**里使用对方绑定，顶层求值互不依赖。
+import { lockfilePackageEntries, parseClosureKey, vendorKeyToName, VENDOR_KEY_PREFIX } from './vendored.js';
 
 const ICON_PATTERN = /^icons?\/.+\.(png|jpe?g|webp|ico|svg)$/i;
 
@@ -178,6 +182,14 @@ function parseJson(raw) {
 export function coordsToPkgDeps(dependencies) {
   const out = {};
   for (const [coord, version] of Object.entries(dependencies ?? {})) {
+    // v5 r3 §2：`vendor:<包名>` 是「只从包内」的键，落进 package.json 时必须用**包名**
+    // （值由安装端按 §8.3 本地化改写为 file: 指向包内副本）。带 `:` 的键绝不能交给 pnpm
+    // ——实测 ERR_PNPM_INVALID_DEPENDENCY_NAME。
+    const vendoredName = vendorKeyToName(coord);
+    if (vendoredName) {
+      out[vendoredName] = version;
+      continue;
+    }
     const git = parseGitCoord(coord);
     if (git) {
       const ref = version === 'latest' ? '' : `#${version}`;
@@ -339,6 +351,8 @@ export function parsePkgGitSpec(spec) {
  * manifest 结构校验（v5：profile 与 dshhome；v4：兼容单 profile），返回错误信息数组（空数组 = 合法）。
  * - v4：type 仅接受 'profile'（'collection' 预留报「暂未支持」）；
  * - v5：type 接受 'profile' 或 'dshhome'（dshhome 校验 profiles / presets / skills / instructions / defaultProfile）。
+ * @param {object} opts { lockText? } 可选的随包 pnpm-lock.yaml 文本——提供时 vendored 闭包条目
+ *   （key = npm 包名，不在 dependencies 中）按 §12 约束 1 的闭包规则放行。
  */
 export function validateManifest(m, opts = {}) {
   const errors = [];
@@ -365,20 +379,121 @@ export function validateManifest(m, opts = {}) {
     if (m.type === 'dshhome') errors.push(...validateDshHome(m));
     else if (m.type === undefined || m.type === 'profile') errors.push(...validateProfile(m));
     else errors.push('type 仅支持 "profile" 或 "dshhome"');
-    // 可选字段（dshVersions §13 / launchers §14）：未声明时跳过；未知字段不拒绝
-    // ——消费者必须忽略不认识的字段（规范的前向兼容规则）。
+    // v5 r2 可选字段（vendored / dshVersions / launchers）：未声明时全部跳过（前向兼容，
+    // r1 包行为不变）；声明了则做结构校验（未知字段不拒绝——消费者必须忽略不认识的字段）。
+    errors.push(...validateVendored(m, opts.lockText));
     errors.push(...validateDshVersions(m));
     errors.push(...validateLaunchers(m));
   } else {
     errors.push(...validateProfile(m));
   }
-  void opts; // 保留签名（历史调用方会传 opts；当前无可选项）
   return errors;
 }
 
 /* ---------------------------------------------------------------------------
- * v5 可选字段校验（dshVersions §13 / launchers §14）
+ * v5 r2 可选字段校验（vendored §12 / dshVersions §13 / launchers §14）
  * ------------------------------------------------------------------------- */
+
+/** 所有形态的依赖坐标合集（profile：dependencies；dshhome：各 profile 依赖并集）。 */
+function dependencyCoords(m) {
+  if (m.type === 'dshhome') {
+    const set = new Map(); // coord → 版本（同名冲突时先到先得，仅用于一致性检查）
+    for (const u of Object.values(m.profiles ?? {})) {
+      for (const [k, v] of Object.entries(u?.dependencies ?? {})) if (!set.has(k)) set.set(k, v);
+    }
+    return set;
+  }
+  return new Map(Object.entries(m.dependencies ?? {}));
+}
+
+const VENDORED_REASONS = new Set(['upstream-missing', 'unpublished', 'local-modified', 'explicit']);
+export { VENDORED_REASONS };
+
+/**
+ * vendored{}（v5 r3 §12）：两类键 + 条目字段 + 双向对账 + 键侧一致性。
+ *  - 直接依赖：键 `vendor:<包名>`，必须 ∈ dependencies 且与 dependencies 钉死版本一致；
+ *  - 闭包条目：键 `name@version` + `kind:"closure"` + `name` 必填，必须能在随包
+ *    pnpm-lock.yaml 的 packages:/snapshots: 里反查到（反查 lockfile 是防夹带的安全约束）；
+ *  - 裸键一律拒（r2 废弃形态：来源冲突）；同一包名不得同时以两类出现（§2）。
+ */
+function validateVendored(m, lockText) {
+  const errors = [];
+  // 注意：`vendored` 缺失也要往下走 —— dependencies 里带 `vendor:` 前缀却没有对应条目同样是错
+  // （v5 §2：vendor: 键 = 只从包内，vendored{} 必有条目）。
+  if (m.vendored !== undefined && (typeof m.vendored !== 'object' || m.vendored === null || Array.isArray(m.vendored))) {
+    return ['manifest.vendored 必须是对象（依赖键 → VendoredEntry）'];
+  }
+  const vendorMap = m.vendored ?? {};
+  const deps = dependencyCoords(m);
+  const lockEntries = lockText ? lockfilePackageEntries(lockText) : null;
+  const lockKeys = lockEntries ? new Set(lockEntries.map((e) => `${e.name}@${e.version}`)) : null;
+  const declared = new Set(Object.keys(vendorMap));
+
+  for (const [key, e] of Object.entries(vendorMap)) {
+    const at = `vendored[${key}]`;
+    if (!e || typeof e !== 'object' || Array.isArray(e)) {
+      errors.push(`${at} 必须是对象`);
+      continue;
+    }
+    if (typeof e.version !== 'string' || !e.version) errors.push(`${at}.version 必须是非空字符串`);
+    if (typeof e.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(e.sha256)) errors.push(`${at}.sha256 必须是 64 位十六进制`);
+    if (typeof e.size !== 'number' || !Number.isInteger(e.size) || e.size <= 0) errors.push(`${at}.size 必须是正整数`);
+    if (typeof e.path !== 'string' || !e.path) {
+      errors.push(`${at}.path 必须是非空字符串`);
+    } else {
+      const rel = e.path.replace(/\\/g, '/');
+      if (!rel.startsWith('vendor/') || !rel.endsWith('.tgz')) errors.push(`${at}.path 必须位于 vendor/ 下且以 .tgz 结尾`);
+      if (rel.split('/').includes('..')) errors.push(`${at}.path 含危险段 '..'`);
+    }
+    if (e.reason !== undefined && !VENDORED_REASONS.has(e.reason)) {
+      errors.push(`${at}.reason 仅支持 ${[...VENDORED_REASONS].join(' / ')}`);
+    }
+    if (e.kind !== undefined && e.kind !== 'direct' && e.kind !== 'closure') {
+      errors.push(`${at}.kind 仅支持 "direct" / "closure"`);
+    }
+
+    const name = vendorKeyToName(key);
+    if (name) {
+      if (e.kind === 'closure') errors.push(`${at} kind:"closure" 与 vendor: 前缀不能同时出现`);
+      if (!deps.has(key)) {
+        errors.push(`${at} 不在 dependencies 中（vendor: 键必须 ∈ dependencies，见 v5 §12 约束 1）`);
+      } else if (typeof e.version === 'string' && e.version && deps.get(key) !== e.version) {
+        errors.push(`${at}.version（${e.version}）与 dependencies 钉死的版本（${deps.get(key)}）不一致`);
+      }
+      continue;
+    }
+
+    const closure = parseClosureKey(key);
+    if (!closure) {
+      errors.push(`${at} 键非法：直接依赖必须用 vendor:<包名>、闭包条目必须用 name@version（裸键是已废弃的 r2 形态 → 拒装，见 v5 r3 §12 约束 1）`);
+      continue;
+    }
+    if (e.kind !== 'closure') errors.push(`${at} 形如闭包键但未声明 kind:"closure"（v5 r3 §12 约束 1）`);
+    if (typeof e.name !== 'string' || !e.name) {
+      errors.push(`${at}.name 闭包条目必填（npm 包名）`);
+    } else if (e.name !== closure.name) {
+      errors.push(`${at}.name（${e.name}）与键中的包名（${closure.name}）不一致`);
+    }
+    if (!lockKeys) {
+      errors.push(`${at} 闭包条目需要随包 pnpm-lock.yaml 才能反查来源（防夹带，v5 r3 §12 约束 1）`);
+    } else if (!lockKeys.has(`${closure.name}@${closure.version}`)) {
+      errors.push(`${at} 闭包条目不在随包 pnpm-lock.yaml 的 packages:/snapshots: 中（防夹带校验失败）`);
+    }
+  }
+
+  // 反向对账（v5 r3 §2/§12）：每个 vendor: 依赖键都必须有 vendored 条目；同一包名不得两类并存
+  for (const [depKey] of deps) {
+    const pkg = vendorKeyToName(depKey);
+    if (!pkg) continue;
+    if (!declared.has(depKey)) {
+      errors.push(`dependencies["${depKey}"] 缺少对应的 vendored 条目（vendor: 键 = 只从包内，vendored{} 必有条目）`);
+    }
+    if (deps.has(pkg)) {
+      errors.push(`依赖「${pkg}」同时以裸键与 vendor: 键出现（来源冲突 → 拒装，见 v5 §2）`);
+    }
+  }
+  return errors;
+}
 
 /** dshVersions（§13）：非空、字符串、去重；dshVersion 同时出现时必须 ∈ 集合。 */
 function validateDshVersions(m) {

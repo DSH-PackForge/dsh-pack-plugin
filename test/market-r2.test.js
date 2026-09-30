@@ -79,8 +79,10 @@ test('pickR2Fields：缺省 / 非法 → 空对象或跳过（宽容消费，不
   assert.deepEqual(pickR2Fields(null), {});
   assert.deepEqual(pickR2Fields('nope'), {});
   assert.deepEqual(pickR2Fields({ name: 'x', bundles: [] }), {});
-  // 类型不符的字段静默跳过；dshVersions 只留非空字符串项；不认识的历史字段（vendored）忽略
-  assert.deepEqual(pickR2Fields({ launchers: [], vendored: { a: {} }, dshVersions: [42, '', '  '] }), {});
+  // 类型不符的字段静默跳过；dshVersions 只留非空字符串项；vendored 非对象 → 跳过
+  assert.deepEqual(pickR2Fields({ launchers: [], vendored: 'x', dshVersions: [42, '', '  '] }), {});
+  // 消费侧展示：对象形态的 vendored 要透传（主线不再产内嵌包，但要能显示别人的）
+  assert.deepEqual(pickR2Fields({ vendored: { a: {} } }), { vendored: { a: {} } });
 });
 
 /* ------------------- r2Badges（市场详情徽标） ------------------- */

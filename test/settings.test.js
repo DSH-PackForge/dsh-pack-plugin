@@ -81,9 +81,10 @@ test('registerSettingsSection：无 ctx.effect 时仍能注册', () => {
   assert.equal(slots.registered.length, 1);
 });
 
-// 基线已取消离线包：原有用例没有覆盖这块文案，这里补上「这些键已不存在」的断言
-// （dict 经 locale.register 落进 mock，检查的就是 UI 真正会显示的那份词表）。
-test('i18n 字典：基线取消离线包后不再注册内嵌依赖文案，兼容性徽标文案保留', () => {
+// 主线口径：**导出侧**的内嵌依赖 UI（`vendor.*` 词表）不得再注册；
+// 但**展示侧**（市场详情「内嵌 N 个依赖」徽标）要保留——主线仍能装带 vendor/ 的包。
+// dict 经 locale.register 落进 mock，检查的就是 UI 真正会显示的那份词表。
+test('i18n 字典：导出侧内嵌文案已移除，展示侧徽标文案保留', () => {
   const slots = makeSlots();
   const locale = makeLocale();
   registerSettingsSection({ slots, locale, effect: (fn) => fn() }, {});
@@ -91,11 +92,13 @@ test('i18n 字典：基线取消离线包后不再注册内嵌依赖文案，兼
 
   for (const [name, d] of [['zh', zh], ['en', en]]) {
     const stale = Object.keys(d).filter((k) => k === 'vendor' || k.startsWith('vendor.'));
-    assert.deepEqual(stale, [], `${name} 仍注册了内嵌依赖键：${stale.join(', ')}`);
-    assert.equal('market.r2.vendored' in d, false, `${name} 仍保留内嵌依赖徽标文案`);
+    assert.deepEqual(stale, [], `${name} 仍注册了导出侧内嵌依赖键：${stale.join(', ')}`);
+    assert.equal(typeof d['market.r2.vendored'], 'string', `${name} 缺展示侧徽标文案`);
     assert.equal(typeof d['market.r2.none'], 'string', `${name} 缺徽标兜底文案`);
-    assert.equal(/内嵌|vendored/.test(d['market.r2.none']), false, `${name} 徽标兜底文案仍暗示内嵌依赖`);
   }
+  assert.equal(zh['market.r2.vendored'], '内嵌 {count} 个依赖');
+  assert.ok(zh['market.r2.none'].includes('未内嵌依赖'), 'zh 兜底文案应说明未内嵌');
+  assert.equal(en['market.r2.vendored'], '{count} vendored deps');
 
   // 正向对照：launchers / dshVersions 徽标文案必须原样保留（否则上面的断言可能恒真）
   assert.equal(zh['market.r2.launcherRequire'], '需启动器 {id} ≥ {ver}');
@@ -104,14 +107,19 @@ test('i18n 字典：基线取消离线包后不再注册内嵌依赖文案，兼
   assert.equal(en['market.r2.dshVersions'], 'Compatible DSH versions: {versions}');
 });
 
-// 与上面的运行时词表检查互补：源文件里不得再留内嵌依赖的标识/死字符串（注释提到历史允许）。
-test('src/settings.js：不再出现内嵌依赖相关标识（vendored / 坐标字段 / 词表前缀）', () => {
+// 与上面的运行时词表检查互补：**导出侧**的标识/死字符串不得再留在源文件里
+// （`market.r2.vendored` 是展示侧，允许；注释提到历史也允许）。
+test('src/settings.js：不再出现导出侧内嵌依赖标识（坐标字段 / 词表前缀 / 依赖清单端点）', () => {
   const src = readFileSync(new URL('../src/settings.js', import.meta.url), 'utf8');
-  const patterns = [/\bvendored\b/, /vendorCoords/, /vendor\./];
+  // 只看代码行：注释里提「原来的 pack/dependencies 轮询已删除」是允许的（也是有用的历史说明）
+  const code = src.split(/\r?\n/).filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+  const patterns = [/vendorCoords/, /\bvendor\./, /pack\/dependencies/, /overrides\.vendor/];
   for (const re of patterns) {
-    const hit = src.match(re);
-    assert.equal(hit, null, `src/settings.js 仍残留「${hit?.[0]}」`);
+    const hit = code.match(re);
+    assert.equal(hit, null, `src/settings.js 代码里仍残留导出侧标识「${hit?.[0]}」`);
   }
+  // 展示侧对照：徽标文案必须还在（否则上面的断言可能恒真）
+  assert.match(code, /market\.r2\.vendored/);
 });
 
 /** 最小 hooks 派发器 + 重渲染：直接渲染函数组件（不引入 react-dom / test-renderer）。
