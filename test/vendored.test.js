@@ -41,6 +41,7 @@ const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex'
 /** 基于 node:fs 的 Host 替身（core 是 DI 边界，测试直接注入真实 fs 能力）。 */
 function fsHost(extra = {}) {
   return {
+    basename: path.basename,
     joinPath: (...p) => path.join(...p),
     resolvePath: (...p) => path.resolve(...p),
     homedir: () => os.homedir(),
