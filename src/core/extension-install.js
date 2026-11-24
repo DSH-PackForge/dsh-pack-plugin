@@ -124,7 +124,7 @@ export async function planExtensionInstall(host, opts) {
     let duplicate = false;
     if (record.kind === 'provider' || record.kind === 'mcp') {
       if (record.kind === 'mcp' && (record.value?.name !== '@deepseek-ai/dsh-mcp-client' ||
-          record.value?.id !== record.id || !record.value.config?.serverName)) throw new Error('MCP 配置与行 ID 不符');
+          record.value?.id !== record.id || !record.value.config?.serverName)) throw new Error('MCP 配置与条目 ID 不符');
       const patch = host.joinPath(root,'cordis.patch.yml');
       const actualPatch = host.joinPath(actualRoot,'cordis.patch.yml');
       const current = await host.readTextFile(actualPatch);

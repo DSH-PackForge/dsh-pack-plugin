@@ -13,13 +13,13 @@ DSH 整合包（`.dspack`）的**纯方案 B 插件 bundle**：一个自包含�
 
 ## 能力总览
 
-- **导出 `.dspack`**：在设置页选择一个配置档或整个 DSH_HOME。单个配置档支持单文件和源仓库导出，整机导出生成 .dspack 并可设置默认配置档。
+- **导出 `.dspack`**：在设置页选择一个配置档（profile）或整个 `DSH_HOME`。单个配置档支持 `.dspack` 单文件与源仓库两种导出形态；全局目录（dshhome）导出生成 `.dspack`，并支持指定默认配置档。
 - **安装 `.dspack`**：本地文件 / URL / 市场包均可；按 `sha256` + `size` 校验完整性，`pnpm` 重建依赖并对账，home 级 `resources` 与 `files[]` 逐项下载落位。
 - **多 profile 切换**：`profiles/desktop` 是激活指针（junction 换指），切换即换指 + 重启桌面，无需重装。
 - **home 级 skills / .agent-presets 隔离**：per-profile 槽位（junction），换 profile 时一并换指（见下文）。
 - **市场浏览**：`index.json` 精简指针 + `packs/<owner>.<repo>/` 懒加载完整清单 / README。
-- **工作区配置 `.dshpkcfg`**：单配置档和整机分别使用各自目录下的配置，切换导出范围时自动回填。
-- **插件与资源**。逐项选择插件声明的额外文件、模型提供方、MCP 服务及技能。技能可随包内嵌、固定 Git 提交或跟踪分支及标签。导入时按使用目标确认凭据，缺少凭据的配置可以跳过。
+- **工作区配置 `.dshpkcfg`**：单配置档与全局目录（dshhome）分别使用各自目录下的配置，切换导出范围时自动回填。
+- **插件与资源**：支持逐项勾选插件声明的数据文件、模型服务商（Provider）、MCP 服务与技能（Skill）；技能支持随包内嵌、固定 Git 提交或跟踪分支/标签。导入时按目标位置确认凭据，缺少凭据的条目可跳过。
 - **下载代理**：About 页可配代理地址（存 `config.proxy`，覆盖一切）；未配时依次回落环境变量（`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`）与 Windows 系统代理（含 `ProxyOverride` 旁路）。支持 http / https / socks / socks5，市场索引 / 包详情 / `.dspack` 安装 / npm 拉取统一生效。
 - **任务中心**：`install` / `export` / `create` 非阻塞执行，设置面板内嵌视图显示阶段时间线与进程输出。
 
@@ -43,7 +43,7 @@ src/core/（vendored 引擎）                    src/locale（可选）
 
 ## 格式契约
 
-新包采用 manifest v6 和标准 ZIP 容器 v4，兼容导入既有 v4/v5 清单的 `.dspack`。导出页的「插件与资源」可配置逐版本 npm registry、多语言插件名、简介和图标，并勾选插件路径、provider、MCP、内嵌或远程技能。导入界面按目标收集凭据，更新时可预览与本地改动冲突的文件和字段。
+新整合包采用清单（manifest）v6 与标准 ZIP 容器 v4，同时兼容导入既有 v4/v5 清单的 `.dspack`。在导出页的「插件与资源」中可配置精确版本的 npm 专用源（registry）、多语言插件名称、简介与图标，并按需勾选插件数据路径、模型服务商（Provider）、MCP 服务及内嵌或远程技能。导入界面支持按目标位置填写或复用凭据，更新时可预览与本地修改冲突的文件和字段。
 
 - **`.dspack` 容器**（pack-structure v4）：标准 ZIP；根放 `dspack.json`（`{"format":"dspack","version":4}` 标记）+ `manifest.json`。
   - **profile 形态**：机器文件（`package.json` / `pnpm-workspace.yaml` / `pnpm-lock.yaml`）放根，其余内容放 `overrides/`，home 级内容放 `home/`。
@@ -76,7 +76,7 @@ src/core/（vendored 引擎）                    src/locale（可选）
 | `profile/open-dir` | 在系统文件管理器打开 profile 目录 |
 | `pack/export` | 导出 `.dspack` / 源仓库（**非阻塞**，立即返回 `taskId`） |
 | `pack/export-choices` | 列出导出范围中的插件和可选资源 |
-| `pack/config-load` / `pack/config-save` | 读取或保存单配置档或整机根目录的工作区配置 `.dshpkcfg` |
+| `pack/config-load` / `pack/config-save` | 读取或保存单配置档或全局目录（DSH_HOME）根目录的工作区配置 `.dshpkcfg` |
 | `pack/view` | 校验并查看 `.dspack` 内容 |
 | `pack/install` | 安装 `.dspack`（**非阻塞**，立即返回 `taskId`） |
 | `pack/market` | 浏览市场（index 列表 / 详情） |

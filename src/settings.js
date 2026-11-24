@@ -112,7 +112,7 @@ const dict = {
     'field.defaultProfile': '安装后的默认配置档',
     'content.data': '导出 data/',
     'action.editResources': '插件与资源',
-    'market.plugins':'插件','market.paths':'插件资源','market.providers':'模型提供方','market.mcp':'MCP 服务','market.skills':'技能',
+    'market.plugins':'插件','market.paths':'插件数据','market.providers':'模型服务商','market.mcp':'MCP 服务','market.skills':'技能',
     'field.source': '.dspack 路径或 URL',
     'field.newName': '新 profile 名',
     'action.export': '导出',
@@ -797,7 +797,7 @@ export function DspackSection({ t, packforge }) {
     if (!sendToChat) { setUpload({ ok: false, error: t('upload.noService') }); return; }
     setUpload({ pending: true });
     const parts = ['请帮我把整合包发布到 GitHub'];
-    if (wholeHome) parts.push('形态为整机 dshhome');
+    if (wholeHome) parts.push('形态为全局目录（dshhome）');
     else if (exportProfile) parts.push(`profile=${exportProfile}`);
     if ((meta.name ?? '').trim()) parts.push(`name=${String(meta.name).trim()}`);
     if ((meta.version ?? '').trim()) parts.push(`version=${String(meta.version).trim()}`);
