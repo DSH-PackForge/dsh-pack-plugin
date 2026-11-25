@@ -44,8 +44,7 @@ const need = (v, msg) => {
 
 // 插件自身元数据：作者/仓库/首页/版本号等，供 About 页与检查更新使用。
 const require = createRequire(import.meta.url);
-const MANAGER = '@dsh-packforge/dsh-pack-plugin';
-const PACKAGE_VERSION = require('../package.json').version;
+const { name: MANAGER, version: PACKAGE_VERSION } = require('../package.json');
 const NPM_REGISTRY = 'https://registry.npmjs.org';
 const NPM_URL = `https://www.npmjs.com/package/${MANAGER}`;
 

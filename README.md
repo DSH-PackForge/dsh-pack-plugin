@@ -1,4 +1,4 @@
-# @dsh-packforge/dsh-pack-plugin
+# @dsh-plugin/dsh-pack-plugin
 
 [![整合包必备](https://dsh-packforge.github.io/dsh-pack-market/badges/plugins/DSH-PackForge-dsh-pack-plugin-zh.svg)](https://dsh-packforge.github.io/dsh-pack-market/#/plugin/DSH-PackForge%2Fdsh-pack-plugin) [![Essential for packs](https://dsh-packforge.github.io/dsh-pack-market/badges/plugins/DSH-PackForge-dsh-pack-plugin-en.svg)](https://dsh-packforge.github.io/dsh-pack-market/#/plugin/DSH-PackForge%2Fdsh-pack-plugin)
 
@@ -10,6 +10,15 @@ DSH 整合包（`.dspack`）的**纯方案 B 插件 bundle**：一个自包含�
 - **加载方式**：官方 bundle 机制——`cordis.patch.yml` 插入 host 插件，`dsh.client` 注入 client 插件。
 
 完整设计见 [dsh-packforge-app/docs/dsh-pack-方案.zh.md](../dsh-packforge-app/docs/dsh-pack-方案.zh.md)；格式契约见 [specs/](../DSH-PackForge/specs/)。
+
+
+## 安装
+
+```sh
+dsh plugin --profile web add @dsh-plugin/dsh-pack-plugin
+```
+
+同一个配置档只需安装一份整合包管理器。已安装 `@dsh-packforge/dsh-pack-plugin` 的配置档可在 DSH 的插件管理页移除旧包，再安装新包。
 
 ## 能力总览
 

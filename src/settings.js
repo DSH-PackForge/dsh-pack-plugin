@@ -12,17 +12,17 @@ import { installSettingsNavIcon, installSectionFocusHook, navIconMaskSvg, navIco
 import { createSectionGate } from './section-gate.js';
 
 const NS = 'dspack';
-const MANAGER_PKG = '@dsh-packforge/dsh-pack-plugin';
+const MANAGER_PKG = '@dsh-plugin/dsh-pack-plugin';
 // 版本号由 bundle-client.mjs 用 esbuild define 注入（__PACKAGE_VERSION__）；未注入（如单测直连源码）时兜底。
-const VERSION = typeof __PACKAGE_VERSION__ === 'undefined' ? '0.1.0' : __PACKAGE_VERSION__;
+const VERSION = typeof __PACKAGE_VERSION__ === 'undefined' ? '0.0.1' : __PACKAGE_VERSION__;
 // logo（icons/folder-zip-line.svg 的 path），About 页用 currentColor 上色。
 const LOGO_PATH = 'M444.330667 128l85.333333 85.333333H896a42.666667 42.666667 0 0 1 42.666667 42.666667v597.333333a42.666667 42.666667 0 0 1-42.666667 42.666667H128a42.666667 42.666667 0 0 1-42.666667-42.666667V170.666667a42.666667 42.666667 0 0 1 42.666667-42.666667h316.330667zM768 768h-170.666667v-128h85.333334v-85.333333h-85.333334v-85.333334h85.333334V384h-85.333334V298.666667h-102.997333l-85.333333-85.333334H170.666667v597.333334h682.666666V298.666667h-170.666666v85.333333h85.333333v85.333333h-85.333333v85.333334h85.333333v213.333333z';
 
 // About 页外部链接（作者 / 仓库 / 求 Star / 生态），点击经 plugin/open-url 用系统浏览器打开。
 const AUTHOR = 'hxh230802';
 const AUTHOR_URL = 'https://github.com/hxh230802';
-const REPO_URL = 'https://github.com/DSH-PackForge/dsh-pack-plugin';
-const NPM_URL = 'https://www.npmjs.com/package/@dsh-packforge/dsh-pack-plugin';
+const REPO_URL = 'https://github.com/dsh-plugins/dsh-pack-plugin';
+const NPM_URL = 'https://www.npmjs.com/package/' + MANAGER_PKG;
 const SPEC_URL = 'https://github.com/DSH-PackForge/DSH-PackForge';
 const APP_URL = 'https://github.com/DSH-PackForge/dsh-packforge-app';
 const MARKET_URL = 'https://github.com/DSH-PackForge/dsh-pack-market';

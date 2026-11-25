@@ -1,4 +1,4 @@
-// 切换时把管理器 @dsh-packforge/dsh-pack-plugin 迁装进目标 profile。
+// 切换时把管理器 @dsh-plugin/dsh-pack-plugin 迁装进目标 profile。
 //
 // 管理器是「住在 profile 里的 bundle」，而切换 = 换掉整个 profile，管理器会被一起换走、
 // 导致切过去就切不回来（单程票）。按不变量：管理器只在「装了自己的 profile」里运行，
@@ -22,8 +22,8 @@ import { ACTIVE_NAME } from './runtime.js';
 import { getHost } from './host.js';
 import { untar } from './core/tar.js';
 
-const MANAGER = '@dsh-packforge/dsh-pack-plugin';
-const FALLBACK_SPECS = { [MANAGER]: '^0.2.0' };
+const MANAGER = '@dsh-plugin/dsh-pack-plugin';
+const LEGACY_MANAGER = '@dsh-packforge/dsh-pack-plugin';
 const NPM_REGISTRY = 'https://registry.npmjs.org';
 
 async function exists(p) {
@@ -43,13 +43,21 @@ async function writeManifest(profileDir, manifest) {
   await fsp.writeFile(path.join(profileDir, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
-function managerDir(profileDir) {
-  return path.join(profileDir, 'node_modules', ...MANAGER.split('/'));
+function managerDir(profileDir, name = MANAGER) {
+  return path.join(profileDir, 'node_modules', ...name.split('/'));
 }
 
-function hasManagerBundle(manifest) {
-  return Array.isArray(manifest?.dsh?.profile?.bundles)
-    && manifest.dsh.profile.bundles.includes(MANAGER);
+async function installedManager(profileDir, manifest) {
+  const bundles = manifest.dsh?.profile?.bundles;
+  if (!Array.isArray(bundles)) {
+    return undefined;
+  }
+  for (const name of [MANAGER, LEGACY_MANAGER]) {
+    if (bundles.includes(name) && await exists(path.join(managerDir(profileDir, name), 'package.json'))) {
+      return name;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -65,10 +73,9 @@ export async function ensureManagerInProfile(runtime, target, { source = 'copy' 
   const targetDir = path.join(runtime.profilesDir, target);
 
   const targetManifest = await readManifest(targetDir);
-  const alreadyInstalled = hasManagerBundle(targetManifest)
-    && await exists(path.join(managerDir(targetDir), 'package.json'));
-  if (alreadyInstalled) {
-    return { installed: false, spec: targetManifest.dependencies?.[MANAGER], source: 'installed' };
+  const existing = await installedManager(targetDir, targetManifest);
+  if (existing) {
+    return { installed: false, spec: targetManifest.dependencies?.[existing], source: 'installed' };
   }
 
   // npm（拉取最新）失败时次之回退 copy（复制当前 profile 的管理器，离线可靠）。
@@ -88,11 +95,16 @@ export async function ensureManagerInProfile(runtime, target, { source = 'copy' 
   // 登记进目标 package.json：dependencies + bundles。
   targetManifest.dependencies ??= {};
   targetManifest.dependencies[MANAGER] = spec;
-  if (!hasManagerBundle(targetManifest)) {
-    targetManifest.dsh ??= {};
-    targetManifest.dsh.profile ??= {};
-    targetManifest.dsh.profile.bundles ??= [];
-    targetManifest.dsh.profile.bundles.push(MANAGER);
+  targetManifest.dsh ??= {};
+  targetManifest.dsh.profile ??= {};
+  const bundles = targetManifest.dsh.profile.bundles ??= [];
+  const oldIndex = bundles.indexOf(LEGACY_MANAGER);
+  if (oldIndex !== -1) {
+    // 旧坐标已登记但包缺失时，保留其层栈位置，避免同时加载同一个 Cordis 条目。
+    delete targetManifest.dependencies[LEGACY_MANAGER];
+    bundles.splice(oldIndex, 1, ...(bundles.includes(MANAGER) ? [] : [MANAGER]));
+  } else if (!bundles.includes(MANAGER)) {
+    bundles.push(MANAGER);
   }
   await writeManifest(targetDir, targetManifest);
 
@@ -106,7 +118,11 @@ async function copyManager(sourceDir, targetDir, target) {
     throw new Error(`当前 profile 里没有 ${MANAGER}，无法迁装到「${target}」（请先在本 profile 安装管理器）`);
   }
   const sourceManifest = await readManifest(sourceDir);
-  const spec = sourceManifest.dependencies?.[MANAGER] ?? FALLBACK_SPECS[MANAGER];
+  const { version } = await readManifest(sourceManager);
+  const spec = sourceManifest.dependencies?.[MANAGER] ?? version;
+  if (!spec) {
+    throw new Error(`${MANAGER} 的本机安装缺少版本`);
+  }
 
   await fsp.mkdir(path.dirname(managerDir(targetDir)), { recursive: true });
   await fsp.cp(sourceManager, managerDir(targetDir), { recursive: true, force: true });
@@ -163,8 +179,7 @@ export async function checkManagerInProfile(runtime, target) {
   const targetDir = path.join(runtime.profilesDir, target);
   try {
     const manifest = await readManifest(targetDir);
-    return hasManagerBundle(manifest)
-      && await exists(path.join(managerDir(targetDir), 'package.json'));
+    return Boolean(await installedManager(targetDir, manifest));
   } catch {
     return false;
   }

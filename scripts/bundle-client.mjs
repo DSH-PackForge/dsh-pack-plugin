@@ -10,8 +10,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
-const PACKAGE_ID = '@dsh-packforge/dsh-pack-plugin';
-const PACKAGE_VERSION = require('../package.json').version;
+const { name: PACKAGE_ID, version: PACKAGE_VERSION } = require('../package.json');
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ENTRY = path.join(ROOT, 'src', 'client.js');
 const OUT = path.join(ROOT, 'lib', 'client.js');

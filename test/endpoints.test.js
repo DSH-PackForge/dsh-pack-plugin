@@ -10,7 +10,7 @@ import { enqueue } from '../src/tasks.js';
 
 const require = createRequire(import.meta.url);
 const VERSION = require('../package.json').version;
-const MANAGER = '@dsh-packforge/dsh-pack-plugin';
+const MANAGER = '@dsh-plugin/dsh-pack-plugin';
 
 test('plugin/check-update：有更新 → outdated=true', async () => {
   const real = getHost();

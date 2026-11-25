@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { ensureManagerInProfile, checkManagerInProfile } from '../src/ensure-manager.js';
 
-const MANAGER = '@dsh-packforge/dsh-pack-plugin';
+const MANAGER = '@dsh-plugin/dsh-pack-plugin';
 
 /** 搭一个带「激活 profile（desktop）已装管理器（自包含 bundle）」的最小 home 夹具。 */
 async function buildFixture() {
@@ -60,8 +60,31 @@ test('ensureManagerInProfile：来源 profile 无管理器 → 抛错', async ()
   try {
     await fsp.rm(path.join(runtime.profilesDir, 'desktop', 'node_modules', ...MANAGER.split('/')), { recursive: true, force: true });
     await writeMinimalTarget(runtime.profilesDir, 'newpack');
-    await assert.rejects(() => ensureManagerInProfile(runtime, 'newpack'), /没有 @dsh-packforge/);
+    await assert.rejects(() => ensureManagerInProfile(runtime, 'newpack'), /没有 @dsh-plugin/);
   } finally {
     await fsp.rm(home, { recursive: true, force: true });
   }
+});
+
+test('识别旧坐标的已安装管理器，修复缺失的旧包时只保留新坐标', async t => {
+  const { home, runtime } = await buildFixture();
+  t.after(() => fsp.rm(home, { recursive: true, force: true }));
+  const dir = await writeMinimalTarget(runtime.profilesDir, 'existing');
+  const legacy = '@dsh-packforge/dsh-pack-plugin';
+  const legacyDir = path.join(dir, 'node_modules', ...legacy.split('/'));
+  const pkgPath = path.join(dir, 'package.json');
+  await fsp.mkdir(legacyDir, { recursive: true });
+  await fsp.writeFile(path.join(legacyDir, 'package.json'), JSON.stringify({ name: legacy, version: '0.3.5' }));
+  await fsp.writeFile(pkgPath, JSON.stringify({
+    dependencies: { [legacy]: '0.3.5' },
+    dsh: { profile: { bundles: ['base', legacy, 'extra'] } },
+  }));
+  assert.equal(await checkManagerInProfile(runtime, 'existing'), true);
+  assert.deepEqual(await ensureManagerInProfile(runtime, 'existing'), { installed: false, spec: '0.3.5', source: 'installed' });
+
+  await fsp.unlink(path.join(legacyDir, 'package.json'));
+  assert.equal((await ensureManagerInProfile(runtime, 'existing')).installed, true);
+  const pkg = JSON.parse(await fsp.readFile(pkgPath, 'utf8'));
+  assert.deepEqual(pkg.dependencies, { [MANAGER]: '^0.1.0' });
+  assert.deepEqual(pkg.dsh.profile.bundles, ['base', MANAGER, 'extra']);
 });
