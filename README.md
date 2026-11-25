@@ -19,7 +19,7 @@ DSH 整合包（`.dspack`）的**纯方案 B 插件 bundle**：一个自包含�
 - **home 级 skills / .agent-presets 隔离**：per-profile 槽位（junction），换 profile 时一并换指（见下文）。
 - **市场浏览**：`index.json` 精简指针 + `packs/<owner>.<repo>/` 懒加载完整清单 / README。
 - **工作区配置 `.dshpkcfg`**：单配置档与全局目录（dshhome）分别使用各自目录下的配置，切换导出范围时自动回填。
-- **插件与资源**：支持逐项勾选插件声明的数据文件、模型服务商（Provider）、MCP 服务与技能（Skill）；技能支持随包内嵌、固定 Git 提交或跟踪分支/标签。导入时按目标位置确认凭据，缺少凭据的条目可跳过。
+- **插件与资源**：支持逐项勾选插件声明的数据文件、模型服务商（Provider）、MCP 服务与技能（Skill）；技能支持随包内嵌、固定 Git 提交或跟踪分支/标签。导入时可逐项选择导入或跳过；需要凭据的条目支持粘贴新值或确认复用本机凭据。
 - **下载代理**：About 页可配代理地址（存 `config.proxy`，覆盖一切）；未配时依次回落环境变量（`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`）与 Windows 系统代理（含 `ProxyOverride` 旁路）。支持 http / https / socks / socks5，市场索引 / 包详情 / `.dspack` 安装 / npm 拉取统一生效。
 - **任务中心**：`install` / `export` / `create` 非阻塞执行，设置面板内嵌视图显示阶段时间线与进程输出。
 
@@ -43,7 +43,7 @@ src/core/（vendored 引擎）                    src/locale（可选）
 
 ## 格式契约
 
-新整合包采用清单（manifest）v6 与标准 ZIP 容器 v4，同时兼容导入既有 v4/v5 清单的 `.dspack`。在导出页的「插件与资源」中可配置精确版本的 npm 专用源（registry）、多语言插件名称、简介与图标，并按需勾选插件数据路径、模型服务商（Provider）、MCP 服务及内嵌或远程技能。导入界面支持按目标位置填写或复用凭据，更新时可预览与本地修改冲突的文件和字段。
+新整合包采用清单（manifest）v6 与标准 ZIP 容器 v4，同时兼容导入既有 v4/v5 清单的 `.dspack`。在导出页的「插件与资源」中可配置精确版本的 npm 专用源（registry）、多语言插件名称、简介与图标，并按需勾选插件数据路径、模型服务商（Provider）、MCP 服务及内嵌或远程技能。导入界面会列出可选资源及其目标位置，用户可逐项选择。更新时可预览与本地修改冲突的文件和字段。
 
 - **`.dspack` 容器**（pack-structure v4）：标准 ZIP；根放 `dspack.json`（`{"format":"dspack","version":4}` 标记）+ `manifest.json`。
   - **profile 形态**：机器文件（`package.json` / `pnpm-workspace.yaml` / `pnpm-lock.yaml`）放根，其余内容放 `overrides/`，home 级内容放 `home/`。

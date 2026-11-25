@@ -15,6 +15,9 @@ export function resolveRuntime(ctx) {
   if (pc && typeof pc.home === 'string') {
     return {
       home: pc.home,
+      credentialCwd: pc.cwd ?? process.cwd(),
+      installAnchor: pc.installAnchor,
+      overlayPaths: pc.overlayPaths ?? [],
       profilesDir: path.join(pc.home, PROFILES_DIR),
       profileName: pc.name ?? ACTIVE_NAME,
       profileDir: pc.dir ?? null,
@@ -28,6 +31,7 @@ export function resolveRuntime(ctx) {
   const home = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
   return {
     home,
+    credentialCwd: process.cwd(),
     profilesDir: path.join(home, PROFILES_DIR),
     profileName: ACTIVE_NAME,
     profileDir: path.join(home, PROFILES_DIR, ACTIVE_NAME),

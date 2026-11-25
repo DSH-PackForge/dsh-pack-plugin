@@ -93,13 +93,19 @@ async function exportTarget(runtime,host,payload) {
   return resolveExportProfile(runtime,host,payload?.profile);
 }
 
-function installOptions(runtime, payload) {
+function installOptions(runtime, payload, ctx) {
+  const snapshot = ctx?.get?.('launchEnvironment');
   return {
     source: need(payload?.source, '缺少整合包位置'),
     name: payload?.name,
     profilesRoot: payload?.profilesRoot ?? runtime?.profilesDir,
     home: runtime?.home,
+    credentialCwd: runtime?.credentialCwd,
+    installAnchor: runtime?.installAnchor, overlayPaths: runtime?.overlayPaths,
+    credentialEnvironment: snapshot?.getFrom ? ref =>
+      snapshot.getFrom(ref,['process'])?.value || snapshot.getFrom(ref,['project-env','user-env'])?.value : undefined,
     update: payload?.update === true,
+    listResourcesOnly: payload?.listResourcesOnly === true,
     decisions: payload?.decisions, credentials: payload?.credentials, confirmedCredentials: payload?.confirmedCredentials,
     resolutions: payload?.resolutions, previewToken: payload?.previewToken,
     previousSource: payload?.previousSource, previousSha256: payload?.previousSha256,
@@ -348,21 +354,25 @@ export const ENDPOINTS = {
     }
   },
 
-  'pack/preview-install': async ({ runtime, payload }) =>
-    installPack(getHost(), { ...installOptions(runtime, payload), dryRun: true }),
+  'pack/preview-install': async ({ ctx, runtime, payload }) =>
+    installPack(getHost(), { ...installOptions(runtime, payload, ctx), dryRun: true }),
 
-  'pack/install': async ({ runtime, payload }) => {
+  'pack/install': async ({ ctx, runtime, payload }) => {
     const host = getHost();
     need(payload?.source, '缺少 .dspack 路径或 URL');
 
     const id = tasks.createTask({ kind: 'install', title: '安装整合包', home: runtime?.home });
     tasks.enqueue(async () => {
       try {
+        const log = tasks.logSink(id);
         const r = await installPack(host, {
-          ...installOptions(runtime, payload),
+          ...installOptions(runtime, payload, ctx),
           onProgress: tasks.progressBridge(id),
-          onOutput: tasks.logSink(id),
+          onOutput: log,
         });
+        for (const item of r.items || []) {
+          if (item.notice) log('\n' + item.key + ' ' + item.notice + '\n');
+        }
         tasks.finish(id, {
           ok: true,
           title: `安装 ${r.profileName}`,

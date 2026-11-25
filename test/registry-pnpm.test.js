@@ -8,21 +8,29 @@ import { applyPluginSources } from '../src/core/registry.js';
 
 async function registry(packages) {
   const requests = [];
+  const tarballs = new Map();
+  for (const [name, versions] of Object.entries(packages)) {
+    for (const [version, dependencies] of Object.entries(versions)) {
+      const file = name + '/-/' + name.split('/').pop() + '-' + version + '.tgz';
+      const pkg = {name, version, dependencies};
+      const bytes = buildTarball({ 'package/package.json': new TextEncoder().encode(JSON.stringify(pkg)) });
+      tarballs.set(file, {bytes, integrity: 'sha512-' + createHash('sha512').update(bytes).digest('base64')});
+    }
+  }
   const server = createServer((req, res) => {
     const path = decodeURIComponent(new URL(req.url, 'http://localhost').pathname).slice(1);
     requests.push(path);
+    if (tarballs.has(path)) {
+      res.end(tarballs.get(path).bytes);
+      return;
+    }
     for (const [name, versions] of Object.entries(packages)) {
       const meta = {};
       for (const [version, deps] of Object.entries(versions)) {
         const pkg = { name, version, dependencies: deps };
-        const bytes = buildTarball({ 'package/package.json': new TextEncoder().encode(JSON.stringify(pkg)) });
         const key = name + '/-/' + name.split('/').pop() + '-' + version + '.tgz';
-        if (path === key) {
-          res.end(bytes);
-          return;
-        }
         const tarball = 'http://127.0.0.1:' + server.address().port + '/' + key;
-        meta[version] = { ...pkg, dist: { tarball, integrity: 'sha512-' + createHash('sha512').update(bytes).digest('base64') } };
+        meta[version] = { ...pkg, dist: { tarball, integrity: tarballs.get(key).integrity } };
         if (path === name + '/' + version) {
           res.setHeader('Content-Type','application/json');
           res.end(JSON.stringify(meta[version]));
