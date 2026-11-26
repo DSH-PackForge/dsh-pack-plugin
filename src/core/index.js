@@ -55,3 +55,5 @@ export {
 } from './vendored.js';
 export { untar, buildTarball } from './tar.js';
 export { readMarketIndex, fetchMarketPackDetail, normalizeMarketPack, packDirId, DEFAULT_MARKET_INDEX, pickR2Fields, r2Badges, parseLaunchersRegistry, fetchLaunchersRegistry, DEFAULT_LAUNCHERS_REGISTRY_URL, BUILTIN_LAUNCHERS } from './market.js';
+export { discoverExtensions } from './extensions.js';
+export { exportChoices } from './inspect.js';

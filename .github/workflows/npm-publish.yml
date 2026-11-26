@@ -1,0 +1,62 @@
+name: 质量检查与 npm 发布
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: 质量检查 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v6
+      - name: 设置 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: '11.17.0'
+      - name: 设置 Node.js
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: 安装锁定依赖
+        run: pnpm install --frozen-lockfile
+      - name: 构建宿主与客户端
+        run: pnpm run bundle
+      - name: 运行回归测试
+        run: pnpm test
+      - name: 检查 npm 包内容
+        run: npm pack --dry-run --ignore-scripts
+
+  publish:
+    name: 发布到 npm
+    needs: quality
+    if: >-
+      github.repository == 'dsh-plugins/dsh-pack-plugin' &&
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
+    permissions:
+      contents: write
+      id-token: write
+    uses: dsh-plugins/dsh-npm-publish/.github/workflows/npm-publish.yml@main
+    with:
+      default-branch: master
+      node-version: '24'
+      pnpm-version: '11.17.0'
+      install-command: pnpm install --frozen-lockfile
+      prepare-command: |
+        pnpm run bundle
+        pnpm test
+        npm pack --dry-run --ignore-scripts
+      publish-flags: --access public --ignore-scripts

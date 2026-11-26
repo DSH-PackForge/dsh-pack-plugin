@@ -29,7 +29,7 @@ test('客户端 bundle：注册 {id, factory}，工厂产出 {name, apply}', asy
     delete globalThis.require;
   }
   assert.ok(captured, 'bundle 未调用 window.__ModuleLoader__.load');
-  assert.equal(captured.id, '@dsh-packforge/dsh-pack-plugin');
+  assert.equal(captured.id, '@dsh-plugin/dsh-pack-plugin');
   const exports = captured.factory(() => {});
   assert.equal(exports.name, 'dsh-packforge');
   assert.equal(typeof exports.apply, 'function');

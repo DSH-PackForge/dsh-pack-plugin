@@ -13,6 +13,7 @@
 //   （direct-mount，v3 §8.3）进 node_modules/<name>，并从重建的 package.json 依赖中剔除。
 import { untar, buildTarball } from './tar.js';
 import { parseGitCoord, parsePkgGitSpec, VENDORED_REASONS } from './manifest.js';
+import { fetchPluginTarball, installedPluginSource, registryUrl } from './registry.js';
 
 const decoder = new TextDecoder();
 
@@ -338,8 +339,8 @@ export async function listProfileDependencies(host, dirs) {
   const seen = new Set();
   for (const dir of dirs ?? []) {
     const pkgRaw = await host.readTextFile(host.joinPath(dir, 'package.json'));
-    let deps = null;
-    try { deps = JSON.parse(pkgRaw ?? '')?.dependencies; } catch { deps = null; }
+    const profile = pkgRaw ? JSON.parse(pkgRaw) : null;
+    const deps = profile?.dependencies;
     if (!deps || typeof deps !== 'object') continue;
     for (const [pkgName, spec] of Object.entries(deps)) {
       if (typeof spec !== 'string' || !spec) continue;
@@ -372,6 +373,10 @@ export async function listProfileDependencies(host, dirs) {
       // 要求精确版本 → 用已安装 node_modules 的真实版本折算。
       if (item.kind === 'npm' && installedMeta && typeof installedMeta.version === 'string' && installedMeta.version) {
         item.version = installedMeta.version;
+      }
+      const source = installedPluginSource(profile, pkgName);
+      if (source) {
+        item.version = source.version;
       }
       // 同名依赖出现在多个 profile（dshhome）：保留首个带 vendor-blobs 的，否则首个
       const key = `${item.coord}`;
@@ -560,6 +565,15 @@ export async function collectVendoredForExport(host, lookupDirs, baseDependencie
   const vendored = {};
   const entries = {};
   const dependencies = { ...baseDependencies };
+  const units = opts.profileUnits?.length ? opts.profileUnits : [{ dependencies: baseDependencies, plugins: opts.pluginSources }];
+  const sourcePins = new Map();
+  for (const unit of units) {
+    for (const [id, plugin] of Object.entries(unit.plugins || {})) {
+      if (plugin.source) {
+        sourcePins.set(id, { version: unit.dependencies[id], registry: registryUrl(plugin.source.registry) });
+      }
+    }
+  }
   // 覆盖集合（full 档闭包收集用）：坐标折算名 + tarball 真实包名（git 坐标的 lockfile 名是包名）
   const covered = new Set();
   const cover = (coord, bytes) => {
@@ -575,7 +589,20 @@ export async function collectVendoredForExport(host, lookupDirs, baseDependencie
     let bytes = null;
     let version = item.version;
 
-    if (item.kind === 'vendored') {
+    const pin = sourcePins.get(coord);
+    if (pin) {
+      for (const unit of units) {
+        if (!Object.hasOwn(unit.dependencies || {}, coord)) {
+          continue;
+        }
+        const source = unit.plugins?.[coord]?.source;
+        if (!source || unit.dependencies[coord] !== pin.version || registryUrl(source.registry) !== pin.registry) {
+          throw new Error(coord + ' 在不同 profile 使用不同来源或版本，无法共用内嵌副本');
+        }
+      }
+      version = pin.version;
+      bytes = await fetchPluginTarball(host, coord, version, pin.registry, { authDir: item.dir });
+    } else if (item.kind === 'vendored') {
       // round-trip：直接复用安装时落盘的 tarball 字节（版本后缀已固化，无需改写）
       const rel = item.spec.slice('file:'.length);
       bytes = await host.readFile(host.joinPath(item.dir, ...rel.split('/')));
@@ -635,13 +662,21 @@ export async function collectVendoredForExport(host, lookupDirs, baseDependencie
    * ---------------------------------------------------------------------------------- */
   if (lockEntries) {
     for (const { name, version } of lockEntries) {
-      if (covered.has(name)) continue;
+      const pin = sourcePins.get(name);
+      if (covered.has(name)) {
+        if (pin && pin.version !== version) {
+          throw new Error(name + ' 的多个版本无法在 vendored 中共用同一条目');
+        }
+        continue;
+      }
       if (!version) {
         notes.push(`闭包条目「${name}」在 lockfile 中无版本信息 → 跳过`);
         log(`闭包条目「${name}」缺少版本，跳过`);
         continue;
       }
-      let bytes = await fetchRegistryTarball(host, name, version, registry, log);
+      let bytes = pin?.version === version
+        ? await fetchPluginTarball(host, name, version, pin.registry)
+        : await fetchRegistryTarball(host, name, version, registry, log);
       let ok = false;
       if (bytes) {
         // 防御 registry 返回非 tarball / 名实不符（别名包等）：名不符视作取件失败回落

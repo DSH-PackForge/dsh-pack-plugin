@@ -1,6 +1,6 @@
 {
-  "name": "@dsh-packforge/dsh-pack-plugin",
-  "version": "0.3.5",
+  "name": "@dsh-plugin/dsh-pack-plugin",
+  "version": "0.0.1",
   "type": "module",
   "description": "DSH 纯方案 B 插件 bundle：.dspack 导出/导入/多 profile，零官方源码改动、零第三方插件",
   "license": "MIT",
@@ -10,11 +10,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/DSH-PackForge/dsh-pack-plugin.git"
+    "url": "git+https://github.com/dsh-plugins/dsh-pack-plugin.git"
   },
-  "homepage": "https://github.com/DSH-PackForge/dsh-pack-plugin#readme",
+  "homepage": "https://github.com/dsh-plugins/dsh-pack-plugin#readme",
   "bugs": {
-    "url": "https://github.com/DSH-PackForge/dsh-pack-plugin/issues"
+    "url": "https://github.com/dsh-plugins/dsh-pack-plugin/issues"
   },
   "icon": "icons/folder-zip-line.svg",
   "main": "lib/host.js",
@@ -65,9 +65,15 @@
     "prepack": "npm run bundle && npm test"
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/cordis-plugin-include": "1.0.7",
+    "@deepseek-ai/cordis-plugin-loader": "1.0.3",
     "esbuild": "^0.25.0",
     "fflate": "^0.8.2",
     "proxy-agent": "^8.0.2",
-    "proxy-from-env": "^2.1.0"
+    "proxy-from-env": "^2.1.0",
+    "react": "^18.3.1",
+    "semver": "^7.8.6",
+    "yaml": "^2.8.1"
   }
 }

@@ -138,7 +138,19 @@ export async function fetchMarketPackDetail(host, indexPath, entry) {
   if (rawManifest) {
     try { manifest = JSON.parse(rawManifest); } catch { manifest = null; }
   }
-  return { manifest, readme, dir, r2: pickR2Fields(manifest) };
+  let icons;
+  const units = manifest?.type === 'dshhome' ? Object.values(manifest.profiles || {}) : [manifest];
+  const withAssets = units.some(unit=>Object.values(unit?.plugins || {}).some(plugin=>typeof plugin?.icon === 'string' && plugin.icon.startsWith('assets/plugins/')));
+  if (withAssets && /^[a-f0-9]{64}$/i.test(manifest.sha256)) {
+    const cached = await fetchText(host,base+'packs/'+dir+'/plugin-icons.json').catch(()=>null);
+    if (cached) {
+      try {
+        const cache = JSON.parse(cached);
+        if (cache.sha256 === manifest.sha256) icons = cache.icons;
+      } catch { /* 历史缓存缺失或格式不符时仍展示插件名称。 */ }
+    }
+  }
+  return {manifest,readme,dir,r2:pickR2Fields(manifest),...(icons ? {icons} : {})};
 }
 
 /** 取文本（本地路径或 http(s) URL）：URL 走 host.download 拉到临时文件再读（读完清理）；否则当本地路径读。 */
@@ -229,14 +241,14 @@ function collectUrls(entry) {
 function detectFormat(entry, urls, manifestVersion) {
   if (urls.some((u) => /\.dspack(\?|#|$)/i.test(u))) return 'dspack';
   if (urls.some((u) => /\.tgz(\?|#|$)/i.test(u))) return 'tgz';
-  if (manifestVersion === 5 || manifestVersion === 4) return 'dspack';
+  if ([4, 5, 6].includes(manifestVersion)) return 'dspack';
   if (manifestVersion === 3) return 'tgz';
   return 'unknown';
 }
 
 /** manifestVersion → type 兜底（未显式声明 type 时）。 */
 function inferType(manifestVersion) {
-  return manifestVersion === 5 ? 'dshhome' : 'profile';
+  return (manifestVersion === 5 || manifestVersion === 6) ? 'dshhome' : 'profile';
 }
 
 function inferManifestVersion(urls) {

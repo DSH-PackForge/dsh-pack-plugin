@@ -3,8 +3,10 @@
 // 每个 handler 收 { ctx, runtime, payload, signal, peer }，返回纯值；
 // 抛错由 rpc.js 统一转成 { ok:false, error }。core 的 .dspack 格式逻辑经 Host 注入调用。
 import {
+  exportChoices,
   resolveProfileInput,
   exportFromWorkspace,
+  exportHomeFromWorkspace,
   loadWorkspaceConfig,
   saveWorkspaceConfig,
   inspectPack,
@@ -42,8 +44,7 @@ const need = (v, msg) => {
 
 // 插件自身元数据：作者/仓库/首页/版本号等，供 About 页与检查更新使用。
 const require = createRequire(import.meta.url);
-const MANAGER = '@dsh-packforge/dsh-pack-plugin';
-const PACKAGE_VERSION = require('../package.json').version;
+const { name: MANAGER, version: PACKAGE_VERSION } = require('../package.json');
 const NPM_REGISTRY = 'https://registry.npmjs.org';
 const NPM_URL = `https://www.npmjs.com/package/${MANAGER}`;
 
@@ -81,6 +82,44 @@ async function resolveExportProfile(runtime, host, want) {
     throw new Error(`找不到 profile「${want ?? ''}」。可用：${names || '（无）'}`);
   }
   return profile;
+}
+
+async function exportTarget(runtime,host,payload) {
+  if (payload?.type === 'dshhome') {
+    const dir = need(runtime?.home,'当前桌面端没有可导出的 DSH_HOME');
+    return {name:path.basename(dir),dir};
+  }
+  return resolveExportProfile(runtime,host,payload?.profile);
+}
+
+function installOptions(runtime, payload, ctx) {
+  const snapshot = ctx?.get?.('launchEnvironment');
+  return {
+    source: need(payload?.source, '缺少整合包位置'),
+    name: payload?.name,
+    profilesRoot: payload?.profilesRoot ?? runtime?.profilesDir,
+    home: runtime?.home,
+    credentialCwd: runtime?.credentialCwd,
+    installAnchor: runtime?.installAnchor, overlayPaths: runtime?.overlayPaths,
+    credentialEnvironment: snapshot?.getFrom ? ref =>
+      snapshot.getFrom(ref,['process'])?.value || snapshot.getFrom(ref,['project-env','user-env'])?.value : undefined,
+    update: payload?.update === true,
+    listResourcesOnly: payload?.listResourcesOnly === true,
+    decisions: payload?.decisions, credentials: payload?.credentials, confirmedCredentials: payload?.confirmedCredentials,
+    resolutions: payload?.resolutions, previewToken: payload?.previewToken,
+    previousSource: payload?.previousSource, previousSha256: payload?.previousSha256,
+    force: payload?.force === true,
+    dryRun: payload?.dryRun === true,
+    recoverInterrupted: payload?.recoverInterrupted === true,
+    noInstall: payload?.noInstall === true,
+    // 市场安装时透传索引里的 sha256/size，交给 installPack 做完整性校验（防篡改/坏档）。
+    expectedSha256: payload?.expectedSha256 || undefined,
+    expectedSize: payload?.expectedSize,
+    // v5 r2 launchers 判定：本插件运行在官方桌面端内，版本取 DSH_VERSION（无则按「版本未知」
+    // 轻提示放行）；launcherId 默认不传（core 缺省 'official-desktop'），预留 payload 覆盖口。
+    launcherId: payload?.launcherId || undefined,
+    launcherVersion: process.env.DSH_VERSION ?? null,
+  };
 }
 
 export const ENDPOINTS = {
@@ -191,8 +230,10 @@ export const ENDPOINTS = {
   'pack/export': async ({ runtime, payload }) => {
     const host = getHost();
     // 输入校验（profile 解析）在此同步做，出错立即返回；真正的导出进任务中心异步跑。
-    const profile = await resolveExportProfile(runtime, host, payload?.profile ?? null);
+    const profile = await exportTarget(runtime,host,payload);
 
+    const whole = payload?.type === 'dshhome';
+    if (whole && payload?.mode === 'repo') throw new Error('整机导出支持 .dspack 格式');
     const id = tasks.createTask({ kind: 'export', title: `导出 ${profile.name}`, home: runtime?.home });
     const overrides = {
       out: payload?.out,
@@ -205,6 +246,10 @@ export const ENDPOINTS = {
       dshVersion: payload?.dshVersion,
       profileName: payload?.profileName,
       exportContent: payload?.exportContent,
+      selection: payload?.selection,
+      plugins: payload?.plugins,
+      profilePlugins: payload?.profilePlugins,
+      defaultProfile: payload?.defaultProfile,
       // v5 r2 兼容性字段（UI「兼容性」组）：dshVersions 枚举集 + launchers 兼容声明（透传 buildManifest）
       dshVersions:
         Array.isArray(payload?.dshVersions) && payload.dshVersions.length ? payload.dshVersions : undefined,
@@ -227,7 +272,8 @@ export const ENDPOINTS = {
     };
     tasks.enqueue(async () => {
       try {
-        const r = await exportFromWorkspace(host, profile, overrides);        tasks.finish(id, {
+        const r = whole ? await exportHomeFromWorkspace(host,profile,overrides) : await exportFromWorkspace(host, profile, overrides);
+        tasks.finish(id, {
           ok: true,
           title: `导出 ${r.manifest?.name ?? profile.name}`,
           result: r.output
@@ -243,17 +289,29 @@ export const ENDPOINTS = {
 
   // v5 r2：列出 profile 的依赖清单（UI「内嵌依赖」勾选列表数据源；无网络请求，纯本地）。
   // kind ∈ npm（registry 精确版本）/ git（github sha）/ vendored（装过 vendored 包，可直接复用 tarball）。
+  'pack/export-choices': async ({ runtime, payload }) => {
+    const host = getHost();
+    const whole = payload?.type === 'dshhome';
+    const target = await exportTarget(runtime,host,payload);
+    return exportChoices(host, {profile:whole ? null : target,home:{dir:runtime.home},plugins:payload?.plugins,profilePlugins:payload?.profilePlugins});
+  },
+
   'pack/dependencies': async ({ runtime, payload }) => {
     const host = getHost();
-    const profile = await resolveExportProfile(runtime, host, payload?.profile ?? null);
-    const deps = await listProfileDependencies(host, [profile.dir]);
+    const profile = await exportTarget(runtime,host,payload);
+    let dirs = [profile.dir];
+    if (payload?.type === 'dshhome') {
+      dirs = (await host.readdir(host.joinPath(profile.dir,'profiles')) || [])
+        .filter(entry=>entry.type === 'dir' && !['web','headless'].includes(entry.name)).map(entry=>entry.abs);
+    }
+    const deps = await listProfileDependencies(host,dirs);
     return { profile: profile.name, dir: profile.dir, deps };
   },
 
   // 读取某个 profile 的工作区配置（.dshpkcfg）；不存在/非法 → config: null。
   'pack/config-load': async ({ runtime, payload }) => {
     const host = getHost();
-    const profile = await resolveExportProfile(runtime, host, payload?.profile ?? null);
+    const profile = await exportTarget(runtime,host,payload);
     const config = await loadWorkspaceConfig(host, profile.dir);
     return { profile: profile.name, dir: profile.dir, config };
   },
@@ -261,7 +319,7 @@ export const ENDPOINTS = {
   // 保存某个 profile 的工作区配置（.dshpkcfg）；只落白名单字段、去 null/undefined。
   'pack/config-save': async ({ runtime, payload }) => {
     const host = getHost();
-    const profile = await resolveExportProfile(runtime, host, payload?.profile ?? null);
+    const profile = await exportTarget(runtime,host,payload);
     const path = await saveWorkspaceConfig(host, profile.dir, payload ?? {});
     return { profile: profile.name, dir: profile.dir, path };
   },
@@ -295,30 +353,25 @@ export const ENDPOINTS = {
     }
   },
 
-  'pack/install': async ({ runtime, payload }) => {
+  'pack/preview-install': async ({ ctx, runtime, payload }) =>
+    installPack(getHost(), { ...installOptions(runtime, payload, ctx), dryRun: true }),
+
+  'pack/install': async ({ ctx, runtime, payload }) => {
     const host = getHost();
-    const source = need(payload?.source, '缺少 .dspack 路径或 URL');
+    need(payload?.source, '缺少 .dspack 路径或 URL');
 
     const id = tasks.createTask({ kind: 'install', title: '安装整合包', home: runtime?.home });
     tasks.enqueue(async () => {
       try {
+        const log = tasks.logSink(id);
         const r = await installPack(host, {
-          source,
-          name: payload?.name,
-          profilesRoot: payload?.profilesRoot ?? runtime?.profilesDir,
-          force: payload?.force === true,
-          dryRun: payload?.dryRun === true,
-          noInstall: payload?.noInstall === true,
-          // 市场安装时透传索引里的 sha256/size，交给 installPack 做完整性校验（防篡改/坏档）。
-          expectedSha256: payload?.expectedSha256 || undefined,
-          expectedSize: payload?.expectedSize,
-          // v5 r2 launchers 判定：本插件运行在官方桌面端内，版本取 DSH_VERSION（无则按「版本未知」
-          // 轻提示放行）；launcherId 默认不传（core 缺省 'official-desktop'），预留 payload 覆盖口。
-          launcherId: payload?.launcherId || undefined,
-          launcherVersion: process.env.DSH_VERSION ?? null,
+          ...installOptions(runtime, payload, ctx),
           onProgress: tasks.progressBridge(id),
-          onOutput: tasks.logSink(id),
+          onOutput: log,
         });
+        for (const item of r.items || []) {
+          if (item.notice) log('\n' + item.key + ' ' + item.notice + '\n');
+        }
         tasks.finish(id, {
           ok: true,
           title: `安装 ${r.profileName}`,
@@ -346,7 +399,7 @@ export const ENDPOINTS = {
     const entry = payload?.pack;
     if (!entry || typeof entry !== 'object') throw new Error('缺少市场条目');
     const d = await fetchMarketPackDetail(host, payload?.indexPath ?? DEFAULT_MARKET_INDEX, entry);
-    return { manifest: d.manifest, readme: d.readme, dir: d.dir, r2: d.r2, badges: r2Badges(d.manifest) };
+    return { manifest: d.manifest, icons:d.icons, readme: d.readme, dir: d.dir, r2: d.r2, badges: r2Badges(d.manifest) };
   },
 
   'task/list': async () => ({ tasks: tasks.list() }),

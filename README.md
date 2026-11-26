@@ -1,4 +1,4 @@
-# @dsh-packforge/dsh-pack-plugin
+# @dsh-plugin/dsh-pack-plugin
 
 [![整合包必备](https://dsh-packforge.github.io/dsh-pack-market/badges/plugins/DSH-PackForge-dsh-pack-plugin-zh.svg)](https://dsh-packforge.github.io/dsh-pack-market/#/plugin/DSH-PackForge%2Fdsh-pack-plugin) [![Essential for packs](https://dsh-packforge.github.io/dsh-pack-market/badges/plugins/DSH-PackForge-dsh-pack-plugin-en.svg)](https://dsh-packforge.github.io/dsh-pack-market/#/plugin/DSH-PackForge%2Fdsh-pack-plugin)
 
@@ -6,19 +6,29 @@ DSH 整合包（`.dspack`）的**纯方案 B 插件 bundle**：一个自包含�
 
 - **零官方源码改动**：不改 `apps/desktop` / `apps/desktop-host`。
 - **零第三方插件**：只依赖 DSH 出厂运行时服务（`ctx.connection` / `ctx.webServer` / `ctx.slots` / `ctx.locale` / `ctx.profileContext`）。
-- **自包含**：运行时依赖仅 `fflate`（ZIP）+ `proxy-agent`（下载代理），其余全部 vendor 进仓库（`src/core/`、`src/host-node.js`），不依赖 `@dsh-packforge/*` 引擎包。
+- **自包含**：ZIP、YAML 与下载代理依赖随宿主构建产物分发。
 - **加载方式**：官方 bundle 机制——`cordis.patch.yml` 插入 host 插件，`dsh.client` 注入 client 插件。
 
 完整设计见 [dsh-packforge-app/docs/dsh-pack-方案.zh.md](../dsh-packforge-app/docs/dsh-pack-方案.zh.md)；格式契约见 [specs/](../DSH-PackForge/specs/)。
 
+
+## 安装
+
+```sh
+dsh plugin --profile web add @dsh-plugin/dsh-pack-plugin
+```
+
+同一个配置档只需安装一份整合包管理器。已安装 `@dsh-packforge/dsh-pack-plugin` 的配置档可在 DSH 的插件管理页移除旧包，再安装新包。
+
 ## 能力总览
 
-- **导出 `.dspack`**：把某个 profile 打包成单文件整合包（profile 形态），或从源仓库导出（`exportRepo`）。UI 目前只暴露 profile 形态；dshhome（整机）形态的打包 / 安装 / 校验逻辑在 core 里就绪，未在设置面板接线。
+- **导出 `.dspack`**：在设置页选择一个配置档（profile）或整个 `DSH_HOME`。单个配置档支持 `.dspack` 单文件与源仓库两种导出形态；全局目录（dshhome）导出生成 `.dspack`，并支持指定默认配置档。
 - **安装 `.dspack`**：本地文件 / URL / 市场包均可；按 `sha256` + `size` 校验完整性，`pnpm` 重建依赖并对账，home 级 `resources` 与 `files[]` 逐项下载落位。
 - **多 profile 切换**：`profiles/desktop` 是激活指针（junction 换指），切换即换指 + 重启桌面，无需重装。
 - **home 级 skills / .agent-presets 隔离**：per-profile 槽位（junction），换 profile 时一并换指（见下文）。
 - **市场浏览**：`index.json` 精简指针 + `packs/<owner>.<repo>/` 懒加载完整清单 / README。
-- **工作区配置 `.dshpkcfg`**：每个 profile 一份，保存 / 读取 / 自动回填。
+- **工作区配置 `.dshpkcfg`**：单配置档与全局目录（dshhome）分别使用各自目录下的配置，切换导出范围时自动回填。
+- **插件与资源**：支持逐项勾选插件声明的数据文件、模型服务商（Provider）、MCP 服务与技能（Skill）；技能支持随包内嵌、固定 Git 提交或跟踪分支/标签。导入时可逐项选择导入或跳过；需要凭据的条目支持粘贴新值或确认复用本机凭据。
 - **下载代理**：About 页可配代理地址（存 `config.proxy`，覆盖一切）；未配时依次回落环境变量（`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `NO_PROXY`）与 Windows 系统代理（含 `ProxyOverride` 旁路）。支持 http / https / socks / socks5，市场索引 / 包详情 / `.dspack` 安装 / npm 拉取统一生效。
 - **任务中心**：`install` / `export` / `create` 非阻塞执行，设置面板内嵌视图显示阶段时间线与进程输出。
 
@@ -42,15 +52,17 @@ src/core/（vendored 引擎）                    src/locale（可选）
 
 ## 格式契约
 
-- **`.dspack` 容器**（pack-structure v3 / **v3 r2**）：标准 ZIP；根放 `dspack.json`（`{"format":"dspack","version":3}` 标记）+ `manifest.json`。
+新整合包采用清单（manifest）v6 与标准 ZIP 容器 v4，同时兼容导入既有 v4/v5 清单的 `.dspack`。在导出页的「插件与资源」中可配置精确版本的 npm 专用源（registry）、多语言插件名称、简介与图标，并按需勾选插件数据路径、模型服务商（Provider）、MCP 服务及内嵌或远程技能。导入界面会列出可选资源及其目标位置，用户可逐项选择。更新时可预览与本地修改冲突的文件和字段。
+
+- **`.dspack` 容器**（pack-structure v4）：标准 ZIP；根放 `dspack.json`（`{"format":"dspack","version":4}` 标记）+ `manifest.json`。
   - **profile 形态**：机器文件（`package.json` / `pnpm-workspace.yaml` / `pnpm-lock.yaml`）放根，其余内容放 `overrides/`，home 级内容放 `home/`。
   - **dshhome 形态**：整机快照（`profiles/`、`presets/`、`skills/`、`instructions/`、`defaultProfile` 等）。
   - **vendored 依赖内嵌（v3 r2 §8）**：可选 `vendor/` 目录携带依赖 tarball。导入侧已实现阶段 0 对账 + 逐 tarball `sha256`/`size` 预验（装前拒装）、tarball 落盘 `vendor-blobs/` + 重建 `package.json` 时改写为 `file:` 引用 + 本地优先安装；**闭包完整性检测**（对照随包 `pnpm-lock.yaml`）——覆盖完整自动切 `pnpm install --offline`（零网络、缺件即报错），局部覆盖 `--prefer-offline`（本地与网络互为兜底）；DSHL `vendor:` 方言包按隐式条目消费（直挂 `node_modules/`，依赖剔除，不传给 pnpm）。
   - **导出侧手动内嵌（v3 r2 §8.6）**：导出面板列出依赖清单（`pack/dependencies` 端点，npm/git/已内嵌三类）供手动勾选，叠加 **vendor 档位**（`.dshpkcfg` `vendor` 键，workspace-config v1 r2）：`auto`（默认，round-trip 保持 + 手动勾选，不联网探测）/ `off`（禁用）/ `full`（全部直接依赖，离线包形态）；勾选后按坐标取件——`vendor-blobs/` round-trip 复用原 tarball 字节、npm 先取 registry 原件（字节一致）、取不到时从 `node_modules` 重打包并按规范加 `-local.N` 版本后缀（dependencies 值 / `vendored[].version` / tarball 内 version 三处一致）；体积阈值（>500 MB 警告 / >2 GiB 拒绝打包）。
   - **导出侧兼容性编辑（v5 r2 §13/§14）**：导出面板「兼容性」组编辑 `dshVersions`（实测兼容版本枚举集，datalist 建议来自本机已装版本，首个即首选、未填 `dshVersion` 时作首选）与 `launchers`（四个已认领启动器 ID 的支持/冲突 + `minVersion`/`reason`，简式/全式归一）；两者持久化进 `.dshpkcfg`（白名单已扩展）并在打包前强校验（`dshVersion ∈ dshVersions` 等错误在导出时报出）。
-- **manifest v5 / v5 r2**：`type: "profile" | "dshhome"`（见 `src/core/manifest.js`）。r2 可选字段：`vendored{}`（§12，导入消费 + 结构校验已实现）、`dshVersions`（§13，交集决策已实现：`dshVersion` 优先 → 集合内最新）、`launchers`（§14，结构校验已实现；安装端判定表待接线 UI 确认流）。前向兼容：未知字段不拒装。
+- **manifest v6**：`type: "profile" | "dshhome"`（见 `src/core/manifest.js`）。r2 可选字段：`vendored{}`（§12，导入消费 + 结构校验已实现）、`dshVersions`（§13，交集决策已实现：`dshVersion` 优先 → 集合内最新）、`launchers`（§14，结构校验已实现；安装端判定表待接线 UI 确认流）。前向兼容：未知字段不拒装。
 - **安全规则**（`src/core/security.js`）：`node_modules/`、`dist/`、密钥 / 凭据、嵌套压缩包、`.dshpkcfg`、`.dsh-pack` 等一律不进包。
-- **工作区配置**（specs/workspace-config/v1，`src/core/workspace.js`）：`.dshpkcfg` 为单个 UTF-8 JSON 对象，2 空格缩进 + 结尾换行；只认白名单字段（`name` / `version` / `displayName` / `description` / `author` / `icon` / `dshVersion` / `out` / `exportContent` / `profileName` / `mode` / `content` / `defaultProfile`）；空字符串表示「未填写」。
+- **工作区配置**（specs/workspace-config/v1，`src/core/workspace.js`）：`.dshpkcfg` 为单个 UTF-8 JSON 对象，2 空格缩进 + 结尾换行；资源设置为 `selection`、`plugins` 和 `profilePlugins`，其他白名单字段包括（`name` / `version` / `displayName` / `description` / `author` / `icon` / `dshVersion` / `out` / `exportContent` / `profileName` / `mode` / `content` / `defaultProfile`）；空字符串表示「未填写」。
 - **市场索引**（specs/index/index.md，schemaVersion 2，`src/core/market.js`）：`index.json` 只放 `downloadUrl` + `sha256` + `size` 指针和元数据，完整 manifest / README 从 `packs/<owner>.<repo>/` 懒加载。
 
 ## 多 profile 切换与 home 级隔离
@@ -72,7 +84,8 @@ src/core/（vendored 引擎）                    src/locale（可选）
 | `profile/switch-check` | 预检切换（如首次迁移是否需杀桌面） |
 | `profile/open-dir` | 在系统文件管理器打开 profile 目录 |
 | `pack/export` | 导出 `.dspack` / 源仓库（**非阻塞**，立即返回 `taskId`） |
-| `pack/config-load` / `pack/config-save` | 读取 / 保存某 profile 的工作区配置 `.dshpkcfg` |
+| `pack/export-choices` | 列出导出范围中的插件和可选资源 |
+| `pack/config-load` / `pack/config-save` | 读取或保存单配置档或全局目录（DSH_HOME）根目录的工作区配置 `.dshpkcfg` |
 | `pack/view` | 校验并查看 `.dspack` 内容 |
 | `pack/install` | 安装 `.dspack`（**非阻塞**，立即返回 `taskId`） |
 | `pack/market` | 浏览市场（index 列表 / 详情） |
@@ -120,13 +133,13 @@ src/                       host 插件 + client 插件源码
   ball-settings.js         球的默认动作：点官方触发按钮打开原设置页并切到本插件分区
   ball-entry.js            悬浮球浏览器入口（自我挂载，打成 lib/ball.js）
   ball-host.js             悬浮球宿主接线（index 注入行 / tapIndex / 脚本资源读取）
-  core/                    vendored 整合包引擎（仅 import fflate）
+  core/                    整合包导入、导出与更新引擎
     index.js               公共 API 出口
     host.js                Host 接口（DI 边界）
     dspack.js              ZIP 容器（buildDspack / parseDspack / encodeText / decodeText）
     pack.js                packProfile / packHome / dspackEntryPath / summarizeHome
     install.js             安装（installPack 等；home 级内容经 storeHomeRel 落槽位）
-    manifest.js            manifest v5 构建 / 校验
+    manifest.js            manifest v6 构建及旧版校验
     scan.js                目录扫描（安全规则 + junction 跟随）
     security.js            打包安全规则（DENY_*）
     special.js             特殊目录识别

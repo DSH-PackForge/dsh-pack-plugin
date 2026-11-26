@@ -5,6 +5,7 @@
 /** 任何路径段命中即排除（依赖、构建产物、生成配置、敏感文件） */
 const DENY_EXACT = new Set([
   // 依赖与构建产物
+  '.git',
   'node_modules',
   'dist',
   'build',
@@ -36,6 +37,7 @@ const DENY_EXACT = new Set([
   'settings.yaml',
   // 导出工作区配置快照（本工具写入，不进包）
   '.dshpkcfg',
+  '.dspack-sources',
   // home 级换指 slot 与运行时状态（skills/.agent-presets 真实数据 + 进度/迁移日志，不进包）
   '.dsh-pack',
 ]);
@@ -75,7 +77,7 @@ function matchExt(name) {
 
 /** 判断某相对路径（'/' 分隔）是否必须排除。 */
 export function isExcluded(relPath) {
-  const rel = relPath.replace(/\\/g, '/');
+  const rel = relPath.replace(/\\/g, '/').toLowerCase();
   const segments = rel.split('/');
   const name = segments[segments.length - 1];
 

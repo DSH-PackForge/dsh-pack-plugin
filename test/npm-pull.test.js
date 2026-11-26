@@ -8,7 +8,7 @@ import { untar } from '../src/core/tar.js';
 import { ensureManagerInProfile } from '../src/ensure-manager.js';
 import { setHost } from '../src/host.js';
 
-const MANAGER = '@dsh-packforge/dsh-pack-plugin';
+const MANAGER = '@dsh-plugin/dsh-pack-plugin';
 
 /** 造一个最小 ustar 文件条目（header + 数据 + 512 对齐）。untar 不校验 magic/checksum。 */
 function tarFile(name, text) {
@@ -69,7 +69,7 @@ test('ensureManagerInProfile source=npm：从 registry 拉最新，登记 ^versi
     setHost({
       async download(url, dest) {
         if (url.endsWith('/latest')) {
-          await fsp.writeFile(dest, JSON.stringify({ version: '9.9.9', dist: { tarball: 'https://registry.npmjs.org/@dsh-packforge/dsh-pack-plugin/-/dsh-pack-plugin-9.9.9.tgz' } }));
+          await fsp.writeFile(dest, JSON.stringify({ version: '9.9.9', dist: { tarball: 'https://registry.npmjs.org/@dsh-plugin/dsh-pack-plugin/-/dsh-pack-plugin-9.9.9.tgz' } }));
         } else {
           await fsp.writeFile(dest, tarball);
         }

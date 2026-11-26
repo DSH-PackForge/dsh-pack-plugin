@@ -81,13 +81,14 @@ test('registerSettingsSection：无 ctx.effect 时仍能注册', () => {
 });
 
 /** 最小 hooks 派发器：直接渲染函数组件（不引入 react-dom / test-renderer）。
- *  组件只用 useState / useEffect；useEffect 置空以跳过异步 RPC 副作用。 */
+ *  useEffect 置空以跳过异步 RPC 副作用。 */
 function renderFunctionComponent(Component, props) {
   const dispatcher = React.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED?.ReactCurrentDispatcher;
   const prev = dispatcher?.current;
   const states = [];
   let idx = 0;
   dispatcher.current = {
+    useRef(current) { return { current }; },
     useState(init) {
       const i = idx++;
       if (states[i] === undefined) states[i] = typeof init === 'function' ? init() : init;

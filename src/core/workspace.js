@@ -5,6 +5,7 @@ import { exportRepo } from './repo.js';
 
 /** .dshpkcfg 已知字段白名单（规范 v1 r2：公共 + profile + dshhome 形态 + 兼容性/内嵌旋钮）。 */
 export const WORKSPACE_KEYS = [
+  'selection', 'plugins', 'profilePlugins',
   'name', 'version', 'displayName', 'description', 'author', 'icon', 'dshVersion', 'out',
   'exportContent', 'profileName', 'mode', 'content', 'defaultProfile',
   'dshVersions', 'launchers', 'vendor',

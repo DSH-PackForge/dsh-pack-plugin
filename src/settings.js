@@ -1,3 +1,4 @@
+import { chooseExportResources, reviewInstall } from './v6-dialogs.js';
 // DSH 客户端插件 · 整合包管理器主面板（三 Tab：管理 / 导出 / 市场）。
 //
 // 所有按钮经 ctx.connection.rpc 直连宿主 endpoint（静默，不进聊天栏），
@@ -5,26 +6,76 @@
 //
 // slots 契约（已从 DSH 源码确证）：
 //   ctx.slots.inject("settings.section", () => ctx.slots.register(options, Component))
-import { createElement as h, useState, useEffect, Fragment } from 'react';
+import { createElement as h, useState, useEffect, useRef, Fragment } from 'react';
 import { PROFILE_NAME_RE, RESERVED_PROFILE_NAMES } from './channel.js';
 import { installSettingsNavIcon, installSectionFocusHook, navIconMaskSvg, navIconMaskUrl } from './settings-nav-icon.js';
 import { createSectionGate } from './section-gate.js';
 
 const NS = 'dspack';
-const MANAGER_PKG = '@dsh-packforge/dsh-pack-plugin';
+const MANAGER_PKG = '@dsh-plugin/dsh-pack-plugin';
 // 版本号由 bundle-client.mjs 用 esbuild define 注入（__PACKAGE_VERSION__）；未注入（如单测直连源码）时兜底。
-const VERSION = typeof __PACKAGE_VERSION__ === 'undefined' ? '0.1.0' : __PACKAGE_VERSION__;
+const VERSION = typeof __PACKAGE_VERSION__ === 'undefined' ? '0.0.1' : __PACKAGE_VERSION__;
 // logo（icons/folder-zip-line.svg 的 path），About 页用 currentColor 上色。
 const LOGO_PATH = 'M444.330667 128l85.333333 85.333333H896a42.666667 42.666667 0 0 1 42.666667 42.666667v597.333333a42.666667 42.666667 0 0 1-42.666667 42.666667H128a42.666667 42.666667 0 0 1-42.666667-42.666667V170.666667a42.666667 42.666667 0 0 1 42.666667-42.666667h316.330667zM768 768h-170.666667v-128h85.333334v-85.333333h-85.333334v-85.333334h85.333334V384h-85.333334V298.666667h-102.997333l-85.333333-85.333334H170.666667v597.333334h682.666666V298.666667h-170.666666v85.333333h85.333333v85.333333h-85.333333v85.333334h85.333333v213.333333z';
 
 // About 页外部链接（作者 / 仓库 / 求 Star / 生态），点击经 plugin/open-url 用系统浏览器打开。
 const AUTHOR = 'hxh230802';
 const AUTHOR_URL = 'https://github.com/hxh230802';
-const REPO_URL = 'https://github.com/DSH-PackForge/dsh-pack-plugin';
-const NPM_URL = 'https://www.npmjs.com/package/@dsh-packforge/dsh-pack-plugin';
+const REPO_URL = 'https://github.com/dsh-plugins/dsh-pack-plugin';
+const NPM_URL = 'https://www.npmjs.com/package/' + MANAGER_PKG;
 const SPEC_URL = 'https://github.com/DSH-PackForge/DSH-PackForge';
 const APP_URL = 'https://github.com/DSH-PackForge/dsh-packforge-app';
 const MARKET_URL = 'https://github.com/DSH-PackForge/dsh-pack-market';
+
+function localizedLabel(value) {
+  if (typeof value === 'string') return value;
+  if (!value || typeof value !== 'object') return '';
+  const language = globalThis.navigator?.language || 'zh';
+  return [value[language],value[language.split('-')[0]],...Object.values(value)].find(v=>typeof v === 'string' && v) || '';
+}
+
+function displayIcon(icon,cache) {
+  if (typeof icon !== 'string') return undefined;
+  if (icon.startsWith('assets/plugins/')) {
+    const value = cache?.[icon];
+    return typeof value === 'string' && /^data:image\/(?:png|jpeg|webp|svg\+xml);base64,[a-z0-9+/]+=*$/i.test(value) ? value : undefined;
+  }
+  try { const url = new URL(icon); return url.protocol === 'https:' && !url.username && !url.password ? url.href : undefined; }
+  catch { return undefined; }
+}
+
+function marketResources(manifest,icons,t) {
+  if (manifest?.manifestVersion !== 6) return null;
+  const units = manifest.type === 'dshhome' ? Object.entries(manifest.profiles || {}) : [['',manifest]];
+  const groups = [];
+  function group(id,title,items) {
+    if (!items.length) return;
+    groups.push(h('section',{key:id},h('h4',null,title),h('ul',null,...items)));
+  }
+  function display(id,name,desc,meta,icon) {
+    const title = localizedLabel(name) || id;
+    return h('li',{key:id},
+      icon ? h('img',{src:icon,width:24,height:24,alt:'',loading:'lazy',referrerPolicy:'no-referrer',
+        onError:e=>{
+          const image = e.currentTarget;
+          if (image.src.startsWith('https://cdn.jsdelivr.com/npm/')) image.src = image.src.replace('https://cdn.jsdelivr.com/npm/','https://cdn.jsdelivr.net/npm/');
+        }}) : null,
+      h('strong',null,title), ' ', h('code',null,[title === id ? '' : id, ...meta].filter(Boolean).join(' · ')),
+      desc ? h('p',null,localizedLabel(desc)) : null);
+  }
+  for (const [scope,unit] of units) {
+    const items = Object.entries(unit.plugins || {}).map(([id,p])=>display(id,p.name,p.desc,[unit.dependencies?.[id]],displayIcon(p.icon,icons)));
+    group('plugins:'+scope,[t('market.plugins'),scope].filter(Boolean).join(' · '),items);
+  }
+  const labels = {'path.json':'market.paths','provider.json':'market.providers','mcp.json':'market.mcp','skill.json':'market.skills'};
+  for (const [file,label] of Object.entries(labels)) {
+    const list = manifest.resources?.[file];
+    if (Array.isArray(list)) group(file,t(label),list.map(item=>h('li',{key:[item.scope,item.plugin,item.id].join(':')},
+      h('strong',null,localizedLabel(item.name) || item.id),' ',h('code',null,[item.plugin,item.scope,item.ref,item.commit].filter(Boolean).join(' · ')),
+      item.desc ? h('p',null,localizedLabel(item.desc)) : null)));
+  }
+  return groups;
+}
 
 const dict = {
   zh: {
@@ -56,7 +107,12 @@ const dict = {
     'field.icon': '图标 URL',
     'field.dshVersion': 'DSH 版本（留空取最新已装）',
     'field.out': '输出目录（留空用当前目录）',
-    'field.profile': '导出 profile（默认当前）',
+    'field.profile': '导出范围',
+    'scope.home': '整个 DSH_HOME（全部配置档）',
+    'field.defaultProfile': '安装后的默认配置档',
+    'content.data': '导出 data/',
+    'action.editResources': '插件与资源',
+    'market.plugins':'插件','market.paths':'插件数据','market.providers':'模型服务商','market.mcp':'MCP 服务','market.skills':'技能',
     'field.source': '.dspack 路径或 URL',
     'field.newName': '新 profile 名',
     'action.export': '导出',
@@ -103,12 +159,11 @@ const dict = {
     'launcher.minVersion': '最低版本（可选）',
     'launcher.reason': '冲突原因（建议填写）',
     'group.content': '导出内容（上一级目录开关）',
-    'content.skill': '导出 skills/',
     'content.preset': '导出 .agent-presets/',
     'content.instruction': '导出 AGENTS.md',
     'result.saved': '已保存工作区配置',
     'result.loaded': '已读取工作区配置',
-    'result.noCfg': '该 profile 暂无已保存的工作区配置',
+    'result.noCfg': '该导出范围还没有保存的工作区配置',
     'result.pending': '处理中…',
     'result.taskStarted': '已加入任务中心，进度见面板',
     'result.noRpc': '后端 RPC 不可用（connection 服务缺失）',
@@ -204,7 +259,12 @@ const dict = {
     'field.icon': 'Icon URL',
     'field.dshVersion': 'DSH version (blank = latest)',
     'field.out': 'Output dir (blank = current)',
-    'field.profile': 'Profile to export (default: active)',
+    'field.profile': 'Export scope',
+    'scope.home': 'Entire DSH_HOME (all profiles)',
+    'field.defaultProfile': 'Default profile after installation',
+    'content.data': 'Include data/',
+    'action.editResources': 'Plugins and resources',
+    'market.plugins':'Plugins','market.paths':'Plugin data','market.providers':'Model providers','market.mcp':'MCP servers','market.skills':'Skills',
     'field.source': '.dspack path or URL',
     'field.newName': 'New profile name',
     'vendor.title': 'Vendored deps (offline distribution)',
@@ -366,7 +426,9 @@ const META_FIELDS = ['name', 'version', 'displayName', 'description', 'author', 
 const OUTPUT_FIELDS = ['dshVersion', 'out'];
 const MODES = ['dspack', 'repo'];
 const CONTENT_LEVELS = ['manifest', 'readme', 'full'];
-const CONTENT_TOGGLES = ['skill', 'preset', 'instruction'];
+const HOME_EXPORT = '@dshhome';
+const exportLocation = name => name === HOME_EXPORT ? {type:'dshhome'} : {type:'profile',profile:name};
+
 // 启动器编辑器回落清单（launchers/registry 端点不可用时用；与 specs/launcher-registry.md §1 同步维护）。
 const LAUNCHER_IDS = ['dshl', 'hdsl', 'dsh-packforge-app', 'official-desktop', 'dsh-cli'];
 
@@ -383,10 +445,15 @@ export function DspackSection({ t, packforge }) {
   const [submitting, setSubmitting] = useState(false);
   const [market, setMarket] = useState(null); // null=未加载 undefined=加载中 {packs,error}
   const [meta, setMeta] = useState({});
+  const [resources, setResources] = useState({});
   const [exportProfile, setExportProfile] = useState('');
+  const wholeHome = exportProfile === HOME_EXPORT;
+  const selectedExport = useRef(exportProfile);
+  selectedExport.current = exportProfile;
+  const metadataFields = wholeHome ? META_FIELDS.filter(k=>k !== 'profileName').concat('defaultProfile') : META_FIELDS;
   const [mode, setMode] = useState('dspack');
   const [contentLevel, setContentLevel] = useState('readme');
-  const [exportContent, setExportContent] = useState({ skill: false, preset: false, instruction: false });
+  const [exportContent, setExportContent] = useState({preset:false,instruction:false,data:false});
   const [loadedFor, setLoadedFor] = useState(null); // 已自动加载过配置的 profile 名
   const [deps, setDeps] = useState(null); // 导出依赖清单（null=未加载；[] = 无依赖）
   const [depsFor, setDepsFor] = useState(null); // 已加载依赖清单的 profile 名
@@ -427,7 +494,7 @@ export function DspackSection({ t, packforge }) {
     if (r.ok) {
       const list = r.value.profiles ?? [];
       setProfiles(list);
-      setExportProfile((prev) => prev || list.find((p) => p.active)?.name || list[0]?.name || '');
+      setExportProfile((prev) => prev || list.find((p) => p.active)?.name || list[0]?.name || HOME_EXPORT);
     } else setResult(r);
   };
 
@@ -611,7 +678,17 @@ export function DspackSection({ t, packforge }) {
   // 真正的安装（任务中心非阻塞）：launchers 确认流的终点，市场 / 本地导入两条路径共用。
   const doInstallTask = async (src, extra) => {
     setResult({ pending: true });
-    const r = await call('pack/install', { source: src, ...extra });
+    let reviewed;
+    try {
+      const preview = async (options) => {
+        const result = await call('pack/preview-install', options);
+        if (!result.ok) throw new Error(result.error);
+        return result.value;
+      };
+      reviewed = await reviewInstall(preview, { source: src, ...extra });
+      if (!reviewed) { setResult(null); return; }
+    } catch (error) { return showErr(error.message); }
+    const r = await call('pack/install', reviewed);
     if (!r.ok) return showErr(r.error);
     showOk(t('result.taskStarted'));
     watch(r.value.taskId);
@@ -658,6 +735,7 @@ export function DspackSection({ t, packforge }) {
     setDetail({
       pack,
       manifest: r.value.manifest,
+      icons: r.value.icons,
       readme: r.value.readme ?? '',
       r2: r.value.r2 ?? {},
       badges: r.value.badges ?? [],
@@ -673,18 +751,23 @@ export function DspackSection({ t, packforge }) {
     return '';
   };
 
+  const editResources = async () => {
+    const options = await call('pack/export-choices', { ...exportLocation(exportProfile), plugins: resources.plugins, profilePlugins: resources.profilePlugins });
+    if (!options.ok) return showErr(options.error);
+    const result = await chooseExportResources(options.value.candidates, options.value.units, resources, wholeHome);
+    if (result && selectedExport.current === exportProfile) setResources(result);
+  };
   const doExportFromForm = async () => {
     setResult({ pending: true });
-    const overrides = {};
-    for (const k of [...META_FIELDS, ...OUTPUT_FIELDS]) {
+    const overrides = exportLocation(exportProfile);
+    for (const k of [...metadataFields, ...OUTPUT_FIELDS]) {
       const v = (meta[k] ?? '').trim();
       if (v) overrides[k] = v;
     }
-    overrides.profile = exportProfile;
     overrides.mode = mode;
     overrides.content = contentLevel;
     overrides.exportContent = {
-      skill: !!exportContent.skill,
+      ...(wholeHome ? {data:!!exportContent.data} : {}),
       preset: !!exportContent.preset,
       instruction: !!exportContent.instruction,
     };
@@ -703,7 +786,7 @@ export function DspackSection({ t, packforge }) {
     if (mode === 'dspack' && Object.keys(vendorSel).length) {
       overrides.vendorCoords = { ...vendorSel };
     }
-    const r = await call('pack/export', overrides);
+    const r = await call('pack/export', { ...overrides, ...resources });
     if (!r.ok) return showErr(r.error);
     showOk(t('result.taskStarted'));
     watch(r.value.taskId);
@@ -714,7 +797,8 @@ export function DspackSection({ t, packforge }) {
     if (!sendToChat) { setUpload({ ok: false, error: t('upload.noService') }); return; }
     setUpload({ pending: true });
     const parts = ['请帮我把整合包发布到 GitHub'];
-    if (exportProfile) parts.push(`profile=${exportProfile}`);
+    if (wholeHome) parts.push('形态为全局目录（dshhome）');
+    else if (exportProfile) parts.push(`profile=${exportProfile}`);
     if ((meta.name ?? '').trim()) parts.push(`name=${String(meta.name).trim()}`);
     if ((meta.version ?? '').trim()) parts.push(`version=${String(meta.version).trim()}`);
     const prompt = parts.join('，') + '。';
@@ -756,16 +840,17 @@ export function DspackSection({ t, packforge }) {
   // 把 .dshpkcfg 回填进表单：空串跳过（保留表单默认值）；无 config 则清空回填。
   const applyConfig = (cfg) => {
     const next = {};
-    for (const k of [...META_FIELDS, ...OUTPUT_FIELDS]) {
+    for (const k of [...metadataFields, ...OUTPUT_FIELDS]) {
       const v = cfg?.[k];
       if (typeof v === 'string' && v.trim()) next[k] = v;
     }
     setMeta(next);
-    setMode(MODES.includes(cfg?.mode) ? cfg.mode : 'dspack');
+    setResources(wholeHome ? {selection:cfg?.selection,profilePlugins:cfg?.profilePlugins} : {selection:cfg?.selection,plugins:cfg?.plugins});
+    setMode(!wholeHome && MODES.includes(cfg?.mode) ? cfg.mode : 'dspack');
     setContentLevel(CONTENT_LEVELS.includes(cfg?.content) ? cfg.content : 'readme');
     const ec = cfg?.exportContent;
     setExportContent({
-      skill: ec?.skill === true,
+      data: ec?.data === true,
       preset: ec?.preset === true,
       instruction: ec?.instruction === true,
     });
@@ -776,7 +861,8 @@ export function DspackSection({ t, packforge }) {
   };
 
   const loadConfig = async (name, silent = false) => {
-    const r = await call('pack/config-load', { profile: name });
+    const r = await call('pack/config-load', exportLocation(name));
+    if (selectedExport.current !== name) return;
     if (!r.ok) return showErr(r.error);
     setLoadedFor(name);
     if (!r.value.config) {
@@ -794,11 +880,12 @@ export function DspackSection({ t, packforge }) {
     if (!exportProfile) return;
     setResult({ pending: true });
     const cfg = {};
-    for (const k of [...META_FIELDS, ...OUTPUT_FIELDS]) cfg[k] = (meta[k] ?? '').trim();
+    for (const k of [...metadataFields, ...OUTPUT_FIELDS]) cfg[k] = (meta[k] ?? '').trim();
+    Object.assign(cfg, resources);
     cfg.mode = mode;
     cfg.content = contentLevel;
     cfg.exportContent = {
-      skill: !!exportContent.skill,
+      ...(wholeHome ? {data:!!exportContent.data} : {}),
       preset: !!exportContent.preset,
       instruction: !!exportContent.instruction,
     };
@@ -808,7 +895,7 @@ export function DspackSection({ t, packforge }) {
     const launchers = buildLaunchersField();
     if (Object.keys(launchers).length) cfg.launchers = launchers;
     if (vendorMode !== 'auto') cfg.vendor = vendorMode; // auto 为缺省档，不落盘
-    const r = await call('pack/config-save', { profile: exportProfile, ...cfg });
+    const r = await call('pack/config-save', { ...exportLocation(exportProfile), ...cfg });
     if (!r.ok) return showErr(r.error);
     showOk(t('result.saved') + ' → ' + r.value.path);
   };
@@ -824,7 +911,8 @@ export function DspackSection({ t, packforge }) {
   // 默认勾选「已内嵌」的依赖（装过 vendored 包 round-trip 保持内嵌）；「刷新依赖」可强制重读。
   const loadDeps = async (name, silent = false) => {
     if (!name) return;
-    const r = await call('pack/dependencies', { profile: name });
+    const r = await call('pack/dependencies', exportLocation(name));
+    if (selectedExport.current !== name) return;
     if (!r.ok) {
       if (!silent) showErr(r.error);
       return;
@@ -1013,7 +1101,7 @@ export function DspackSection({ t, packforge }) {
     h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
       h('div', { style: style.group },
         h('div', { style: style.groupTitle }, t('group.meta')),
-        ...META_FIELDS.map(fieldInput),
+        ...metadataFields.map(fieldInput),
       ),
       h('div', { style: style.group },
         h('div', { style: style.groupTitle }, t('group.output')),
@@ -1021,13 +1109,14 @@ export function DspackSection({ t, packforge }) {
         h('label', { style: style.field },
           h('span', { style: style.fieldLabel }, t('field.profile')),
           h('select', { style: style.input, value: exportProfile, onChange: (e) => setExportProfile(e.target.value) },
+            h('option', {value:HOME_EXPORT}, t('scope.home')),
             profiles.map((p) => h('option', { key: p.name, value: p.name }, p.name + (p.active ? `（${t('profile.active')}）` : ''))),
           ),
         ),
         h('label', { style: style.field },
           h('span', { style: style.fieldLabel }, t('field.mode')),
           h('select', { style: style.input, value: mode, onChange: (e) => setMode(e.target.value) },
-            MODES.map((m) => h('option', { key: m, value: m }, t('mode.' + m))),
+            (wholeHome ? ['dspack'] : MODES).map((m) => h('option', { key: m, value: m }, t('mode.' + m))),
           ),
         ),
         mode === 'repo'
@@ -1097,7 +1186,7 @@ export function DspackSection({ t, packforge }) {
       ),
       h('div', { style: style.group },
         h('div', { style: style.groupTitle }, t('group.content')),
-        ...CONTENT_TOGGLES.map((k) =>
+        ...(wholeHome ? ['preset','instruction','data'] : ['preset','instruction']).map((k) =>
           h('label', { key: k, style: style.row },
             h('input', {
               type: 'checkbox', checked: !!exportContent[k],
@@ -1167,9 +1256,10 @@ export function DspackSection({ t, packforge }) {
           )
         : null,
       h('div', { style: style.row },
-        h('button', { type: 'button', style: style.btn, disabled: !rpc, onClick: doSaveConfig }, t('action.save')),
+        h('button', { type: 'button', style: style.btn, disabled: !rpc || loadedFor !== exportProfile, onClick: doSaveConfig }, t('action.save')),
         h('button', { type: 'button', style: style.btn, disabled: !rpc, onClick: doLoadConfig }, t('action.load')),
-        h('button', { type: 'button', style: style.btn, disabled: !rpc, onClick: doExportFromForm }, t('action.export')),
+        h('button', { type: 'button', style: style.btn, disabled: !rpc || loadedFor !== exportProfile, onClick: editResources }, t('action.editResources')),
+        h('button', { type: 'button', style: style.btn, disabled: !rpc || loadedFor !== exportProfile, onClick: doExportFromForm }, t('action.export')),
       ),
       h('div', { style: style.row },
         h('button', { type: 'button', style: style.btn, disabled: !sendToChat || upload?.pending, onClick: doAiUpload }, t('action.upload')),
@@ -1409,13 +1499,13 @@ export function DspackSection({ t, packforge }) {
     const close = () => setDetail(null);
     const pack = detail.pack ?? {};
     return h('div', { style: style.overlay, onClick: close },
-      h('div', { style: { ...style.modal, maxWidth: 560 }, onClick: (e) => e.stopPropagation() },
+      h('div', { style: { ...style.modal, maxWidth: 560, maxHeight:'calc(100dvh - 240px)' }, onClick: (e) => e.stopPropagation() },
         h('h3', { style: style.modalTitle }, t('market.detailTitle')),
         detail.pending
           ? h('p', { style: style.line }, t('market.loading'))
           : detail.error
             ? h('p', { style: style.err }, `${t('market.error')}：${detail.error}`)
-            : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 } },
+            : h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0, minHeight:0, overflowY:'auto' } },
                 h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2 } },
                   h('span', { style: style.listName }, pack.displayName || pack.name || detail.manifest?.name || ''),
                   pack.description ? h('span', { style: style.line }, pack.description) : null,
@@ -1431,6 +1521,7 @@ export function DspackSection({ t, packforge }) {
                             h('span', null, badgeText(b)))
                         : h('p', { key: i, style: style.line }, '· ' + badgeText(b))))
                   : h('p', { style: style.line }, t('market.r2.none')),
+                marketResources(detail.manifest,detail.icons,t),
                 detail.readme
                   ? h('pre', { style: { ...style.taskLog, maxHeight: 260 } }, detail.readme)
                   : null,
