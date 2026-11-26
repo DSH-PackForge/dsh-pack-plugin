@@ -10,11 +10,12 @@ import { HOME_ARTIFACTS } from './home-store.js';
  *
  * @param {Host} host Host 实例
  * @param {string} profileDir Profile 目录绝对路径
+ * @param {(rel: string) => boolean} [exclude] 在读取目录内容前应用的插件排除规则
  */
-export async function scanProfile(host, profileDir) {
+export async function scanProfile(host, profileDir, exclude) {
   const files = [];
   const excluded = [];
-  await walk(host, profileDir, '', files, excluded);
+  await walk(host, profileDir, '', files, excluded, exclude);
   files.sort((a, b) => a.rel.localeCompare(b.rel));
   return { files, excluded };
 }
@@ -30,7 +31,7 @@ export function selectFiles(files, include) {
   return files.filter((f) => set.has(f.rel));
 }
 
-async function walk(host, dir, rel, files, excluded) {
+async function walk(host, dir, rel, files, excluded, exclude) {
   let entries;
   try {
     entries = await host.readdir(dir);
@@ -43,11 +44,16 @@ async function walk(host, dir, rel, files, excluded) {
     if (!entry || typeof entry.name !== 'string') continue;
     const relPath = rel ? `${rel}/${entry.name}` : entry.name;
 
+    if (exclude?.(relPath)) {
+      excluded.push({ rel: relPath, abs: entry.abs, reason: 'deny' });
+      continue;
+    }
+
     if (entry.type === 'symlink') {
       // home 根下的 skills / .agent-presets 是换指 junction：当目录继续遍历（rel 仍记 skills/...）。
       // 其余 symlink（如 profiles/desktop）照旧跳过。
       if (rel === '' && HOME_ARTIFACTS.has(entry.name)) {
-        await walk(host, entry.abs, relPath, files, excluded);
+        await walk(host, entry.abs, relPath, files, excluded, exclude);
         continue;
       }
       excluded.push({ rel: relPath, abs: entry.abs, reason: 'symlink' });
@@ -59,7 +65,7 @@ async function walk(host, dir, rel, files, excluded) {
         excluded.push({ rel: relPath, abs: entry.abs, reason: 'deny' });
         continue;
       }
-      await walk(host, entry.abs, relPath, files, excluded);
+      await walk(host, entry.abs, relPath, files, excluded, exclude);
     } else if (entry.type === 'file') {
       if (isExcluded(relPath)) {
         excluded.push({ rel: relPath, abs: entry.abs, reason: 'deny' });
